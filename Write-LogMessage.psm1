@@ -6,7 +6,10 @@ Function Write-LogMessage {
         [Parameter(Position=1)]
         [ValidateSet("Info", "Warning", "Error", "Success", "Default")]
         [string]$Level,
-        [string]$LogFile = "$healthLogPath\HealthCheck.txt"
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$LogFile
     )
     
     # Generate timestamp for log entry

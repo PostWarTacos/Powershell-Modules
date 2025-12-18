@@ -48,3 +48,5 @@ Function Write-LogMessage {
         }
     }
 }
+
+Export-ModuleMember -Function Write-LogMessage

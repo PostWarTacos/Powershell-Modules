@@ -6,11 +6,24 @@ Function Write-LogMessage {
         [Parameter(Position=1)]
         [ValidateSet("Info", "Warning", "Error", "Success", "Default")]
         [string]$Level,
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory=$false)]
         [AllowNull()]
         [AllowEmptyString()]
         [string]$LogFile
     )
+    
+    # If message is empty, just output a blank line
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        Write-Host ""
+        if ($LogFile) {
+            try {
+                "" | Out-File -FilePath $LogFile -Append -ErrorAction Stop
+            } catch {
+                Write-Warning "Failed to write to log file: $($_.Exception.Message)"
+            }
+        }
+        return
+    }
     
     # Generate timestamp for log entry
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -51,5 +64,3 @@ Function Write-LogMessage {
         }
     }
 }
-
-Export-ModuleMember -Function Write-LogMessage

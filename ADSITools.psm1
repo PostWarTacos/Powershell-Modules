@@ -1,84 +1,24 @@
 <#
 .SYNOPSIS
-    ADSITools PowerShell Module
-
-.DESCRIPTION
-    This module provides utilities for working with Active Directory Service Interfaces (ADSI).
-    It contains functions to search for and interact with Active Directory objects using ADSI
-    without requiring the ActiveDirectory PowerShell module.
-
-.AUTHOR
-    Your Name
-
-.VERSION
-    1.0.0
-
-.NOTES
-    This module requires network connectivity to a domain controller and appropriate
-    permissions to query Active Directory.
+    Active Directory utilities using ADSI without requiring the ActiveDirectory module.
 #>
 
 function Find-ADSIObject {
     <#
     .SYNOPSIS
-        Finds Active Directory objects using ADSI.
-
-    .DESCRIPTION
-        The Find-ADSIObject function searches Active Directory for objects of specified types
-        (Computer, User, Group, or OU) using their name. It uses ADSI (Active Directory Service Interfaces)
-        to perform the search without requiring the ActiveDirectory PowerShell module.
+        Finds Active Directory objects (Computer, User, Group, OU) using ADSI.
 
     .PARAMETER Type
-        Specifies the type of Active Directory object to search for.
-        Valid values are: Computer, User, Group, OU
+        Type of AD object: Computer, User, Group, or OU
 
     .PARAMETER Name
-        The name of the Active Directory object to search for. For computers, do not include the trailing dollar sign ($).
-
-    .INPUTS
-        String
-        You can pipe strings containing object names to this function.
-
-    .OUTPUTS
-        System.DirectoryServices.DirectoryEntry
-        Returns an ADSI DirectoryEntry object if found, or $null if not found.
+        Name of the AD object (do not include $ for computers)
 
     .EXAMPLE
         Find-ADSIObject -Type User -Name "jdoe"
-        
-        Searches for a user account with the sAMAccountName "jdoe".
 
     .EXAMPLE
         Find-ADSIObject -Type Computer -Name "WORKSTATION01"
-        
-        Searches for a computer account named "WORKSTATION01".
-
-    .EXAMPLE
-        Find-ADSIObject -Type Group -Name "Domain Admins"
-        
-        Searches for a group named "Domain Admins".
-
-    .EXAMPLE
-        Find-ADSIObject -Type OU -Name "Computers"
-        
-        Searches for an Organizational Unit named "Computers".
-
-    .EXAMPLE
-        "jdoe", "jsmith" | ForEach-Object { Find-ADSIObject -Type User -Name $_ }
-        
-        Searches for multiple user accounts by piping names to the function.
-
-    .NOTES
-        - This function requires network connectivity to a domain controller
-        - The account running this function must have read permissions to Active Directory
-        - Computer names should not include the trailing dollar sign ($) as it's added automatically
-        - If the object is not found, a warning message is displayed and $null is returned
-
-    .LINK
-        https://docs.microsoft.com/en-us/windows/win32/adsi/active-directory-service-interfaces-adsi
-
-    .FUNCTIONALITY
-        Active Directory, ADSI, Search
     #>
     [CmdletBinding()]
     param (
@@ -90,7 +30,6 @@ function Find-ADSIObject {
         [string]$Name
     )
 
-    # Map LDAP filters for each type
     switch ( $Type ) {
         "Computer" {
             $filter = "(&(objectClass=computer)(sAMAccountName=$Name`$))"

@@ -25,3 +25,5 @@ function Keep-Awake {
         Start-Sleep -Seconds 240
     }
 }
+
+Export-ModuleMember -Function Keep-Awake

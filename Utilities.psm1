@@ -155,18 +155,18 @@ Function Get-FileName() {
 
 #endregion
 
-#region Keep-Awake
+#region Start-KeepAwake
 
-function Keep-Awake {
+function Start-KeepAwake {
     <#
     .SYNOPSIS
         Prevents computer from going idle by simulating F15 key presses every 4 minutes.
     
     .EXAMPLE
-        Keep-Awake
+        Start-KeepAwake
     #>
     
-    Write-Host "Keep-Awake script is running. Press Ctrl+C to stop."
+    Write-Host "Start-KeepAwake script is running. Press Ctrl+C to stop."
 
     Add-Type -AssemblyName System.Windows.Forms
 
@@ -232,6 +232,6 @@ function Measure-CommandClean {
 #region Module Exports
 
 # Export all public functions
-Export-ModuleMember -Function Write-LogMessage, Get-FileName, Keep-Awake, Measure-CommandClean
+Export-ModuleMember -Function Write-LogMessage, Get-FileName, Start-KeepAwake, Measure-CommandClean
 
 #endregion

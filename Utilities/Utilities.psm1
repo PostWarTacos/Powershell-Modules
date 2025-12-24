@@ -21,6 +21,35 @@ function winutil {
     irm https://christitus.com/win | iex
 }
 
+function Update-PowerShell {
+    <#
+    .SYNOPSIS
+        Checks for and installs PowerShell updates via winget
+    #>
+    try {
+        Write-Host "Checking for PowerShell updates..." -ForegroundColor Cyan
+        $updateNeeded = $false
+        $currentVersion = $PSVersionTable.PSVersion.ToString()
+        $gitHubApiUrl = "https://api.github.com/repos/PowerShell/PowerShell/releases/latest"
+        $latestReleaseInfo = Invoke-RestMethod -Uri $gitHubApiUrl
+        $latestVersion = $latestReleaseInfo.tag_name.Trim('v')
+        
+        if ($currentVersion -lt $latestVersion) {
+            $updateNeeded = $true
+        }
+
+        if ($updateNeeded) {
+            Write-Host "Updating PowerShell from $currentVersion to $latestVersion..." -ForegroundColor Yellow
+            winget upgrade Microsoft.PowerShell --accept-source-agreements --accept-package-agreements
+            Write-Host "PowerShell has been updated. Please restart your shell to reflect changes" -ForegroundColor Magenta
+        } else {
+            Write-Host "Your PowerShell is up to date (v$currentVersion)." -ForegroundColor Green
+        }
+    } catch {
+        Write-Error "Failed to update PowerShell. Error: $_"
+    }
+}
+
 #endregion
 
 #region Write-LogMessage

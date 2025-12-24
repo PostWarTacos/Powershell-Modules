@@ -229,9 +229,119 @@ function Measure-CommandClean {
 
 #endregion
 
+#region ConvertTo-Base64
+
+Function ConvertTo-Base64 {
+    <#
+    .SYNOPSIS
+        Encodes a PowerShell script file to Base64 format.
+
+    .DESCRIPTION
+        Opens a file dialog to select a script file, encodes it to Base64 using Unicode encoding,
+        and copies the result to the clipboard.
+
+    .PARAMETER InitialDirectory
+        The directory to open the file dialog in. Defaults to user's Documents\Coding folder.
+
+    .EXAMPLE
+        ConvertTo-Base64
+
+    .EXAMPLE
+        ConvertTo-Base64 -InitialDirectory "C:\Scripts"
+
+    .NOTES
+        To decode: [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedScript))
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$false)]
+        [string]$InitialDirectory = "C:\Users\$env:USERNAME\Documents\Coding"
+    )
+    
+    $scriptPath = Get-FileName -InitialDirectory $InitialDirectory
+    
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+        Write-Warning "No file selected. Operation cancelled."
+        return
+    }
+    
+    try {
+        $bytes = [System.Text.Encoding]::Unicode.GetBytes((Get-Content $scriptPath -Raw))
+        $encodedCommand = [Convert]::ToBase64String($bytes)
+
+        Write-Output $encodedCommand
+        $encodedCommand | Set-Clipboard
+        Write-Host "Encoded command has been copied to clipboard" -ForegroundColor Yellow
+        
+        return $encodedCommand
+    }
+    catch {
+        Write-Error "Failed to encode file: $($_.Exception.Message)"
+    }
+}
+
+#endregion
+
+#region Get-SMSCode
+
+function Get-SMSCode {
+    <#
+    .SYNOPSIS
+        Gets the SMS site code of the current domain.
+
+    .DESCRIPTION
+        Retrieves the SMS site code from Active Directory when CCM is not installed.
+        Queries the System Management container in AD for mSSMSSite objects.
+
+    .EXAMPLE
+        Get-SMSCode
+
+    .EXAMPLE
+        $siteCode = Get-SMSCode
+        Write-Host "Site code: $siteCode"
+
+    .NOTES
+        Intent: Get the SMS site code of the current domain when the current company doesn't have CCM installed.
+        Date: 6-Apr-25
+        Author: Matthew Wurtz
+    #>
+    [CmdletBinding()]
+    param()
+    
+    try {
+        # Get domain DN
+        $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+        $domainDN = "LDAP://CN=System Management,CN=System,DC=" + ($domain.Name -replace '\.', ',DC=')
+
+        # Set up searcher
+        $searcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]$domainDN)
+        $searcher.Filter = "(objectClass=mSSMSSite)"
+        $searcher.SearchScope = "OneLevel"
+        $searcher.PropertiesToLoad.Add("mSSMSSiteCode") | Out-Null
+
+        # Search and return
+        $results = $searcher.FindAll()
+        foreach ($result in $results) {
+            $code = $result.Properties["mSSMSSiteCode"]
+        } 
+
+        return $code
+    }
+    catch {
+        Write-Error "Failed to retrieve SMS site code: $($_.Exception.Message)"
+    }
+    finally {
+        if ($searcher) {
+            $searcher.Dispose()
+        }
+    }
+}
+
+#endregion
+
 #region Module Exports
 
 # Export all public functions
-Export-ModuleMember -Function Write-LogMessage, Get-FileName, Start-KeepAwake, Measure-CommandClean
+Export-ModuleMember -Function Write-LogMessage, Get-FileName, Start-KeepAwake, Measure-CommandClean, ConvertTo-Base64, Get-SMSCode
 
 #endregion

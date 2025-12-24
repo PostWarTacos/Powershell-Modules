@@ -3,6 +3,26 @@
     General-purpose utility functions for logging, file dialogs, system maintenance, and performance testing.
 #>
 
+#region Network Utilities
+
+function Get-PubIP {
+    <#
+    .SYNOPSIS
+        Gets your public IP address.
+    #>
+    (Invoke-WebRequest http://ifconfig.me/ip).Content
+}
+
+function winutil {
+    <#
+    .SYNOPSIS
+        Opens Chris Titus Tech's Windows Utility tool.
+    #>
+    irm https://christitus.com/win | iex
+}
+
+#endregion
+
 #region Write-LogMessage
 
 Function Write-LogMessage {

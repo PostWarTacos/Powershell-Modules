@@ -10,10 +10,33 @@ function admin {
     Use -net for admin credentials on both local and domain resources.
     
     .PARAMETER net
-    Prompt for admin credentials that work on both local machine and domain resources.
+    Prompts for domain admin credentials that work on both local machine and domain resources.
+    When specified, you will be prompted to enter:
+    - Domain name (defaults to DDS if left blank)
+    - Admin username (defaults to wurtzmt-a if left blank)
+    - Password (entered as secure string)
     
-    .PARAMETER args
-    The command to run elevated. If omitted, opens an elevated PowerShell window.
+    Type: Switch
+    Required: False
+    Position: Named
+    Default value: False
+    Accept pipeline input: False
+    Accept wildcard characters: False
+    
+    .PARAMETER Command
+    The command(s) to run in the elevated PowerShell window. If omitted, opens an elevated PowerShell window without executing any commands.
+    Accepts remaining arguments after the switch parameters.
+    
+    Type: String[]
+    Required: False
+    Position: Named
+    Default value: None
+    Accept pipeline input: False (accepts remaining arguments)
+    Accept wildcard characters: False
+    
+    Syntax (BNF):
+    <admin-command> ::= "admin" ["-net"] [<command-text>]
+    <command-text> ::= <powershell-command> | <script-block> | <cmdlet-invocation>
     
     .EXAMPLE
     admin Get-Service

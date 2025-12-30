@@ -21,13 +21,13 @@ ModuleVersion = '1.0.0'
 GUID = 'a8c9f6e2-3d4b-4f8a-9c1e-5b7d8f2a4c6e'
 
 # Author of this module
-Author = 'wurtzmt'
+Author = 'PostWarTacos'
 
 # Company or vendor of this module
 CompanyName = 'Unknown'
 
 # Copyright statement for this module
-Copyright = '(c) 2025 wurtzmt. All rights reserved.'
+Copyright = '(c) 2025 PostWarTacos. All rights reserved.'
 
 # Description of the functionality provided by this module
 Description = 'Unix/Linux command equivalents for PowerShell - grep, touch, df, sed, which, export, pkill, pgrep, head, tail, unzip, mkcd, ll, find-file, cpy, pst, sysinfo'

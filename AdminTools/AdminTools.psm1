@@ -79,10 +79,36 @@ function admin {
         
         if ($Command.Count -gt 0) {
             $commandText = $Command -join ' '
-            if ($processCmd -eq "wt.exe") {
-                Start-Process "wt.exe" -ArgumentList "$powershellCmd -NoExit -Command `"$commandText`"" -Credential $cred
+            
+            # Check if the first argument is a script file
+            $firstArg = $Command[0].Trim('"', "'")
+            $isScriptFile = $firstArg -match '\.(ps1|psm1)$' -and (Test-Path $firstArg -ErrorAction SilentlyContinue)
+            
+            if ($isScriptFile) {
+                # Resolve to absolute path
+                $scriptPath = (Resolve-Path $firstArg).Path
+                $scriptArgs = if ($Command.Count -gt 1) { $Command[1..($Command.Count-1)] -join ' ' } else { '' }
+                
+                if ($processCmd -eq "wt.exe") {
+                    if ($scriptArgs) {
+                        Start-Process "wt.exe" -ArgumentList "$powershellCmd -NoExit -File `"$scriptPath`" $scriptArgs" -Credential $cred
+                    } else {
+                        Start-Process "wt.exe" -ArgumentList "$powershellCmd -NoExit -File `"$scriptPath`"" -Credential $cred
+                    }
+                } else {
+                    if ($scriptArgs) {
+                        Start-Process $powershellCmd -ArgumentList "-NoExit -File `"$scriptPath`" $scriptArgs" -Credential $cred
+                    } else {
+                        Start-Process $powershellCmd -ArgumentList "-NoExit -File `"$scriptPath`"" -Credential $cred
+                    }
+                }
             } else {
-                Start-Process $powershellCmd -ArgumentList "-NoExit -Command `"$commandText`"" -Credential $cred
+                # Regular command
+                if ($processCmd -eq "wt.exe") {
+                    Start-Process "wt.exe" -ArgumentList "$powershellCmd -NoExit -Command `"$commandText`"" -Credential $cred
+                } else {
+                    Start-Process $powershellCmd -ArgumentList "-NoExit -Command `"$commandText`"" -Credential $cred
+                }
             }
         } else {
             if ($processCmd -eq "wt.exe") {
@@ -95,10 +121,35 @@ function admin {
         # Run command in elevated window (local admin only)
         $commandText = $Command -join ' '
         
-        if ($processCmd -eq "wt.exe") {
-            Start-Process $processCmd -ArgumentList "$powershellCmd -NoExit -Command `"$commandText`"" -Verb RunAs
+        # Check if the first argument is a script file
+        $firstArg = $Command[0].Trim('"', "'")
+        $isScriptFile = $firstArg -match '\.(ps1|psm1)$' -and (Test-Path $firstArg -ErrorAction SilentlyContinue)
+        
+        if ($isScriptFile) {
+            # Resolve to absolute path
+            $scriptPath = (Resolve-Path $firstArg).Path
+            $scriptArgs = if ($Command.Count -gt 1) { $Command[1..($Command.Count-1)] -join ' ' } else { '' }
+            
+            if ($processCmd -eq "wt.exe") {
+                if ($scriptArgs) {
+                    Start-Process $processCmd -ArgumentList "$powershellCmd -NoExit -File `"$scriptPath`" $scriptArgs" -Verb RunAs
+                } else {
+                    Start-Process $processCmd -ArgumentList "$powershellCmd -NoExit -File `"$scriptPath`"" -Verb RunAs
+                }
+            } else {
+                if ($scriptArgs) {
+                    Start-Process $processCmd -ArgumentList "-NoExit -File `"$scriptPath`" $scriptArgs" -Verb RunAs
+                } else {
+                    Start-Process $processCmd -ArgumentList "-NoExit -File `"$scriptPath`"" -Verb RunAs
+                }
+            }
         } else {
-            Start-Process $processCmd -ArgumentList "-NoExit -Command `"$commandText`"" -Verb RunAs
+            # Regular command
+            if ($processCmd -eq "wt.exe") {
+                Start-Process $processCmd -ArgumentList "$powershellCmd -NoExit -Command `"$commandText`"" -Verb RunAs
+            } else {
+                Start-Process $processCmd -ArgumentList "-NoExit -Command `"$commandText`"" -Verb RunAs
+            }
         }
     } else {
         # Just open elevated window (local admin only)

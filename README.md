@@ -147,7 +147,7 @@ irm https://raw.githubusercontent.com/PostWarTacos/PowerShellProfile/main/Instal
 ```
 
 This will:
-1. Clone this repository to `~\Documents\Coding\Powershell-Modules\`
+1. Clone this repository to `~\Documents\Coding\WorkspaceMeta\Powershell-Modules\`
 2. Add the modules directory to your `PSModulePath`
 3. Make all modules available for import
 
@@ -163,14 +163,14 @@ If you prefer to install manually:
 
 2. Add modules to PowerShell module path:
    ```powershell
-   $modulePath = Join-Path $HOME 'Documents\Coding\Powershell-Modules'
+   $modulePath = Join-Path $HOME 'Documents\Coding\WorkspaceMeta\Powershell-Modules'
    $currentPath = [Environment]::GetEnvironmentVariable("PSModulePath", "User")
    [Environment]::SetEnvironmentVariable("PSModulePath", "$modulePath;$currentPath", "User")
    ```
 
 3. Restart PowerShell or refresh the session:
    ```powershell
-   $env:PSModulePath += ";$HOME\Documents\Coding\Powershell-Modules"
+   $env:PSModulePath += ";$HOME\Documents\Coding\WorkspaceMeta\Powershell-Modules"
    ```
 
 4. Import modules as needed:
@@ -189,7 +189,7 @@ Once installed, modules can be imported manually or set to auto-import in your P
 Import-Module AdminTools
 
 # Import all modules
-Get-ChildItem "$HOME\Documents\Coding\Powershell-Modules" -Directory | 
+Get-ChildItem "$HOME\Documents\Coding\WorkspaceMeta\Powershell-Modules" -Directory | 
     ForEach-Object { Import-Module $_.FullName -ErrorAction SilentlyContinue }
 ```
 

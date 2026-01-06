@@ -570,11 +570,8 @@ Function ConvertTo-Base64 {
         $bytes = [System.Text.Encoding]::Unicode.GetBytes((Get-Content $scriptPath -Raw))
         $encodedCommand = [Convert]::ToBase64String($bytes)
 
-        Write-Output $encodedCommand
         $encodedCommand | Set-Clipboard
-        Write-Host "Encoded command has been copied to clipboard" -ForegroundColor Yellow
-        
-        return $encodedCommand
+        Write-Host "File Base64 encoded and copied to clipboard" -ForegroundColor Yellow
     }
     catch {
         Write-Error "Failed to encode file: $($_.Exception.Message)"

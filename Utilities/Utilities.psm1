@@ -478,15 +478,28 @@ Function ConvertTo-Base64 {
         Encodes a PowerShell script file to Base64 format.
 
     .DESCRIPTION
-        Opens a file dialog to select a script file, encodes it to Base64 using Unicode encoding,
-        and copies the result to the clipboard. The encoded string can be used with PowerShell's
-        -EncodedCommand parameter to execute scripts without saving them to disk.
+        Encodes a script file to Base64 using Unicode encoding and copies the result to the clipboard.
+        The encoded string can be used with PowerShell's -EncodedCommand parameter to execute scripts
+        without saving them to disk.
         
+        If no file path is specified via the -File parameter, opens a file dialog for selection.
         This is useful for passing scripts through command-line interfaces or storing them
         in configuration files where special characters might cause issues.
 
+    .PARAMETER File
+        Specifies the path to the file to encode.
+        
+        Type: String
+        Required: False
+        Position: 0
+        Default value: None (opens file dialog)
+        Accept pipeline input: False
+        Accept wildcard characters: False
+        
+        If not specified, a file dialog will be displayed for selection.
+
     .PARAMETER InitialDirectory
-        Specifies the directory to open the file selection dialog in.
+        Specifies the directory to open the file selection dialog in (only used when -File is not specified).
         
         Type: String
         Required: False
@@ -498,8 +511,14 @@ Function ConvertTo-Base64 {
         If not specified, defaults to the user's Documents\Coding folder.
         
         Syntax (BNF):
-        <convert-base64-command> ::= "ConvertTo-Base64" ["-InitialDirectory" <directory-path>]
+        <convert-base64-command> ::= "ConvertTo-Base64" ["-File" <file-path>] ["-InitialDirectory" <directory-path>]
+        <file-path> ::= <absolute-path> | <relative-path>
         <directory-path> ::= <absolute-path>
+
+    .EXAMPLE
+        ConvertTo-Base64 -File myscript.ps1
+        
+        Encodes the specified script file and copies to clipboard.
 
     .EXAMPLE
         ConvertTo-Base64
@@ -512,7 +531,7 @@ Function ConvertTo-Base64 {
         Opens file dialog in C:\Scripts folder for script selection.
         
     .EXAMPLE
-        $encoded = ConvertTo-Base64
+        $encoded = ConvertTo-Base64 -File "C:\Scripts\deploy.ps1"
         powershell.exe -EncodedCommand $encoded
         
         Encodes a script and executes it using the encoded command parameter.
@@ -523,15 +542,28 @@ Function ConvertTo-Base64 {
     #>
     [CmdletBinding()]
     param (
+        [Parameter(Mandatory=$false, Position=0)]
+        [string]$File,
+        
         [Parameter(Mandatory=$false)]
         [string]$InitialDirectory = "C:\Users\$env:USERNAME\Documents\Coding"
     )
     
-    $scriptPath = Get-FileName -InitialDirectory $InitialDirectory
-    
-    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
-        Write-Warning "No file selected. Operation cancelled."
-        return
+    # If -File parameter is provided, use it; otherwise open file dialog
+    if ($File) {
+        if (-not (Test-Path -Path $File)) {
+            Write-Error "File not found: $File"
+            return
+        }
+        $scriptPath = $File
+    }
+    else {
+        $scriptPath = Get-FileName -InitialDirectory $InitialDirectory
+        
+        if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+            Write-Warning "No file selected. Operation cancelled."
+            return
+        }
     }
     
     try {

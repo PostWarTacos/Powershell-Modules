@@ -375,6 +375,8 @@ function Start-KeepAwake {
         <keep-awake-command> ::= "Start-KeepAwake"
     #>
     
+    clear-host
+    
     Write-Host "Start-KeepAwake script is running. Press Ctrl+C to stop."
 
     Add-Type -AssemblyName System.Windows.Forms

@@ -32,13 +32,13 @@
     
     # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
     FunctionsToExport = @(
-        'Write-LogMessage',
         'Get-SharesInfo',
         'Get-NetworkDetails',
         'Get-ADLastLogon',
         'Get-DomainController',
         'Get-CurrentUser',
         'Get-LastLoggedOnUser',
+        'Resolve-ComputerIdentity',
         'Get-PrimaryUser',
         'Get-LocalAdmins',
         'Get-DriveSpace',

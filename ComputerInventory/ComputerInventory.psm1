@@ -8,24 +8,46 @@ function Resolve-ComputerIdentity {
     )
     $resolvedHost = $null
     $resolvedIP = $null
-    try {
-        $dns = Resolve-DnsName -Name $Computer -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress }
-        if ($dns) {
-            $resolvedIP = $dns[0].IPAddress
-            $resolvedHost = $dns[0].NameHost
-        } else {
-            try {
-                $ptr = [System.Net.Dns]::GetHostEntry($Computer)
-                $resolvedHost = $ptr.HostName
-                $resolvedIP = $Computer
-            } catch {
-                $resolvedHost = $Computer
-                $resolvedIP = $Computer
-            }
+
+    # Check for local machine
+    if ($Computer -eq $env:COMPUTERNAME -or $Computer -eq 'localhost' -or $Computer -eq '.') {
+        $resolvedHost = $env:COMPUTERNAME
+        # Get first non-loopback IPv4 address from any 'Up' adapter
+        $upAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
+        $upIfIndexes = $upAdapters | Select-Object -ExpandProperty IfIndex
+        $resolvedIP = $null
+        if ($upIfIndexes) {
+            $resolvedIP = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.InterfaceIndex -in $upIfIndexes -and $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -ne '127.0.0.1' } |
+                Select-Object -ExpandProperty IPAddress -First 1)
         }
-    } catch {
-        $resolvedHost = $Computer
-        $resolvedIP = $Computer
+        if (-not $resolvedIP) {
+            # Fallback: any IPv4
+            $resolvedIP = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -ne '127.0.0.1' } |
+                Select-Object -ExpandProperty IPAddress -First 1)
+        }
+        if (-not $resolvedIP) { $resolvedIP = '127.0.0.1' }
+    } else {
+        try {
+            $dns = Resolve-DnsName -Name $Computer -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress }
+            if ($dns) {
+                $resolvedIP = $dns[0].IPAddress
+                $resolvedHost = $dns[0].NameHost
+            } else {
+                try {
+                    $ptr = [System.Net.Dns]::GetHostEntry($Computer)
+                    $resolvedHost = $ptr.HostName
+                    $resolvedIP = $Computer
+                } catch {
+                    $resolvedHost = $Computer
+                    $resolvedIP = $Computer
+                }
+            }
+        } catch {
+            $resolvedHost = $Computer
+            $resolvedIP = $Computer
+        }
     }
     [PSCustomObject]@{
         Hostname = if ($resolvedHost) { $resolvedHost } else { 'null' }
@@ -80,11 +102,7 @@ function Get-SharesInfo {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        $ComputerName = @($env:COMPUTERNAME)
     }
 
     $results = @()
@@ -125,50 +143,100 @@ function Get-NetworkDetails {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        $ComputerName = @($env:COMPUTERNAME)
     }
 
     $results = @()
     foreach ($name in $ComputerName) {
         $identity = Resolve-ComputerIdentity $name
         try {
-            $networks = Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -ComputerName $identity.Hostname -ErrorAction Stop |
-                Where-Object { $_.IPEnabled -and $_.IPAddress }
-            if ($networks) {
-                $ipColumns = @{}
-                $macColumns = @{}
-                $i = 1
-                foreach ($net in $networks) {
-                    # Only take IPv4/IPv6 addresses, skip empty/null
-                    $ips = $net.IPAddress | Where-Object { $_ -match '^(\d+\.|[a-fA-F0-9:]+)$' }
-                    $mac = $net.MACAddress
-                    if ($ips) {
-                        foreach ($ip in $ips) {
-                            $ipColumns["Int$($i): IP"] = $ip
-                            $macColumns["Int$($i) MAC"] = $mac
-                            $i++
-                        }
+            if ($identity.Hostname -eq $env:COMPUTERNAME -or $identity.Hostname -eq 'localhost' -or $name -eq $env:COMPUTERNAME -or $name -eq 'localhost') {
+                # Local logic (unchanged)
+                $adapters = Get-NetAdapter
+                $ipObjs = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceIndex -in $adapters.IfIndex }
+                $primaryIP = [string]$identity.IP
+                $primaryAdapter = $null
+                foreach ($adapter in $adapters) {
+                    $ips = $ipObjs | Where-Object { $_.InterfaceIndex -eq $adapter.IfIndex } | Select-Object -ExpandProperty IPAddress
+                    if ($ips -and ($ips -contains $primaryIP)) {
+                        $primaryAdapter = $adapter
+                        break
                     }
                 }
-                $dnsServers = ($networks | Select-Object -First 1).DNSServerSearchOrder
-                $dnsServers = if ($dnsServers) { $dnsServers -join ", " } else { "N/A" }
-                $gateway = ($networks | Select-Object -First 1).DefaultIPGateway
-                $gateway = if ($gateway) { $gateway -join ", " } else { "N/A" }
+                if ($primaryAdapter) {
+                    $ipconfig = Get-NetIPConfiguration -InterfaceIndex $primaryAdapter.IfIndex
+                    $dnsServers = if ($ipconfig.DnsServer.ServerAddresses) { $ipconfig.DnsServer.ServerAddresses -join ", " } else { "N/A" }
+                    $gateway = if ($ipconfig.IPv4DefaultGateway) { $ipconfig.IPv4DefaultGateway.NextHop } else { "N/A" }
+                } else {
+                    $dnsServers = "N/A"
+                    $gateway = "N/A"
+                }
                 $row = [ordered]@{
                     Hostname = $identity.Hostname
                     IP = $identity.IP
                     DNS = $dnsServers
                     Gateway = $gateway
                 }
-                foreach ($key in $ipColumns.Keys) { $row[$key] = $ipColumns[$key] }
-                foreach ($key in $macColumns.Keys) { $row[$key] = $macColumns[$key] }
+                $i = 1
+                foreach ($adapter in $adapters) {
+                    $mac = $adapter.MacAddress
+                    $status = $adapter.Status
+                    $ips = @($ipObjs | Where-Object { $_.InterfaceIndex -eq $adapter.IfIndex } | Select-Object -ExpandProperty IPAddress)
+                    $row["Int$($i) MAC"] = $mac
+                    $row["Int$($i) Status"] = $status
+                    if ($ips.Count -gt 0 -and [string]::IsNullOrWhiteSpace($ips[0]) -eq $false) {
+                        $row["Int$($i) IP"] = $ips[0]
+                    } else {
+                        $row["Int$($i) IP"] = $null
+                    }
+                    $i++
+                }
                 $results += [PSCustomObject]$row
             } else {
-                $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; DNS = "N/A"; Gateway = "N/A" }
+                # Remote logic
+                $remoteResult = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    param($primaryIP)
+                    $adapters = Get-NetAdapter
+                    $ipObjs = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceIndex -in $adapters.IfIndex }
+                    $primaryAdapter = $null
+                    foreach ($adapter in $adapters) {
+                        $ips = $ipObjs | Where-Object { $_.InterfaceIndex -eq $adapter.IfIndex } | Select-Object -ExpandProperty IPAddress
+                        if ($ips -and ($ips -contains $primaryIP)) {
+                            $primaryAdapter = $adapter
+                            break
+                        }
+                    }
+                    if ($primaryAdapter) {
+                        $ipconfig = Get-NetIPConfiguration -InterfaceIndex $primaryAdapter.IfIndex
+                        $dnsServers = if ($ipconfig.DnsServer.ServerAddresses) { $ipconfig.DnsServer.ServerAddresses -join ", " } else { "N/A" }
+                        $gateway = if ($ipconfig.IPv4DefaultGateway) { $ipconfig.IPv4DefaultGateway.NextHop } else { "N/A" }
+                    } else {
+                        $dnsServers = "N/A"
+                        $gateway = "N/A"
+                    }
+                    $row = [ordered]@{
+                        Hostname = $env:COMPUTERNAME
+                        IP = $primaryIP
+                        DNS = $dnsServers
+                        Gateway = $gateway
+                    }
+                    $i = 1
+                    foreach ($adapter in $adapters) {
+                        $mac = $adapter.MacAddress
+                        $status = $adapter.Status
+                        $ips = @($ipObjs | Where-Object { $_.InterfaceIndex -eq $adapter.IfIndex } | Select-Object -ExpandProperty IPAddress)
+                        $row["Int$($i) MAC"] = $mac
+                        $row["Int$($i) Status"] = $status
+                        if ($ips.Count -gt 0 -and [string]::IsNullOrWhiteSpace($ips[0]) -eq $false) {
+                            $row["Int$($i) IP"] = $ips[0]
+                        } else {
+                            $row["Int$($i) IP"] = $null
+                        }
+                        $i++
+                    }
+                    [PSCustomObject]$row
+                } -ArgumentList $identity.IP
+                $results += $remoteResult
             }
         } catch {
             $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; DNS = "ERROR"; Gateway = "ERROR" }
@@ -2106,35 +2174,4 @@ function Get-CompleteInventory {
 #endregion
 
 # Export module members
-Export-ModuleMember -Function @(
-    'Write-LogMessage',
-    'Get-SharesInfo',
-    'Get-NetworkDetails',
-    'Get-ADLastLogon',
-    'Get-DomainController',
-    'Get-CurrentUser',
-    'Get-LastLoggedOnUser',
-    'Get-PrimaryUser',
-    'Get-LocalAdmins',
-    'Get-DriveSpace',
-    'Get-ChassisType',
-    'Get-MonitorCount',
-    'Get-BatteryHealth',
-    'Get-TPMStatus',
-    'Get-BitLockerStatus',
-    'Get-WindowsDefenderInfo',
-    'Get-LastWindowsUpdate',
-    'Get-PendingUpdatesCount',
-    'Get-PendingReboot',
-    'Get-GPLastUpdate',
-    'Get-PrefetchSize',
-    'Get-SCCMHealth',
-    'Get-AllNetworkInfo',
-    'Get-AllADInfo',
-    'Get-AllUserInfo',
-    'Get-AllHardwareInfo',
-    'Get-AllSecurityInfo',
-    'Get-AllUpdateInfo',
-    'Get-AllSystemHealthInfo',
-    'Get-CompleteInventory'
-)
+Export-ModuleMember -Function *

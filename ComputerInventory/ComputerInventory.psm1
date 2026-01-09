@@ -139,10 +139,34 @@ function Get-NetworkDetails {
             $networks = Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -ComputerName $identity.Hostname -ErrorAction Stop |
                 Where-Object { $_.IPEnabled -and $_.IPAddress }
             if ($networks) {
-                $network = $networks | Select-Object -First 1
-                $dnsServers = if ($network.DNSServerSearchOrder) { $network.DNSServerSearchOrder -join ", " } else { "N/A" }
-                $gateway = if ($network.DefaultIPGateway) { $network.DefaultIPGateway -join ", " } else { "N/A" }
-                $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; DNS = $dnsServers; Gateway = $gateway }
+                $ipColumns = @{}
+                $macColumns = @{}
+                $i = 1
+                foreach ($net in $networks) {
+                    # Only take IPv4/IPv6 addresses, skip empty/null
+                    $ips = $net.IPAddress | Where-Object { $_ -match '^(\d+\.|[a-fA-F0-9:]+)$' }
+                    $mac = $net.MACAddress
+                    if ($ips) {
+                        foreach ($ip in $ips) {
+                            $ipColumns["Int$($i): IP"] = $ip
+                            $macColumns["Int$($i) MAC"] = $mac
+                            $i++
+                        }
+                    }
+                }
+                $dnsServers = ($networks | Select-Object -First 1).DNSServerSearchOrder
+                $dnsServers = if ($dnsServers) { $dnsServers -join ", " } else { "N/A" }
+                $gateway = ($networks | Select-Object -First 1).DefaultIPGateway
+                $gateway = if ($gateway) { $gateway -join ", " } else { "N/A" }
+                $row = [ordered]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    DNS = $dnsServers
+                    Gateway = $gateway
+                }
+                foreach ($key in $ipColumns.Keys) { $row[$key] = $ipColumns[$key] }
+                foreach ($key in $macColumns.Keys) { $row[$key] = $macColumns[$key] }
+                $results += [PSCustomObject]$row
             } else {
                 $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; DNS = "N/A"; Gateway = "N/A" }
             }

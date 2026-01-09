@@ -41,76 +41,113 @@ $username = if ([string]::IsNullOrWhiteSpace($usernameInput)) { "wurtzmt-a" } el
 
 ---
 
+
 ### ADSITools
 Active Directory utilities using ADSI without requiring the ActiveDirectory module.
 
-**Description:**
-Lightweight AD tools that work without needing the full AD module installed.
+**Functions:**
+- `Find-ADSIObject` - Find AD Computers, Users, Groups, or OUs using ADSI (no AD module required)
+   - Supports types: Computer, User, Group, OU
+   - Example: `Find-ADSIObject -Type User -Name "jdoe"`
+
+**Usage:**
+```powershell
+# Find a user
+Find-ADSIObject -Type User -Name "jdoe"
+# Find a computer
+Find-ADSIObject -Type Computer -Name "WORKSTATION01"
+```
 
 ---
+
 
 ### Dillards
 Retrieves store information from the Dillards DDS API.
 
-**Description:**
-Custom module for querying Dillards store data.
+**Functions:**
+- `Get-SiteInfoFromDDSAPI` - Query store info by hostname, store number, or site code
+   - Returns: StoreNumber, SiteCode, Division, StoreType, Timezone
+
+**Usage:**
+```powershell
+# By hostname
+Get-SiteInfoFromDDSAPI -Hostname "S1234WKS001"
+# By store number
+Get-SiteInfoFromDDSAPI -StoreNumber "0123"
+# By site code
+Get-SiteInfoFromDDSAPI -SiteCode "1234"
+```
 
 ---
+
 
 ### GUIDTools
 Tools for finding GUIDs in registry and MSI files.
 
-**Description:**
-Utilities for working with GUIDs in the Windows registry and MSI installers.
+**Functions:**
+- `Find-GUID` - Search registry for installed applications by name or publisher, return GUID and uninstall info
+- `Find-GUIDinMSI` - Extract ProductCode, UpgradeCode, and ProductVersion from an MSI file
+
+**Usage:**
+```powershell
+# Find GUID for installed app
+Find-GUID -AppName "Chrome"
+# Extract GUIDs from MSI
+Find-GUIDinMSI -MSIPath "C:\Temp\app.msi"
+```
 
 ---
+
 
 ### LinuxAliases
 Unix/Linux command equivalents for PowerShell.
 
 **Functions:**
-- `grep` - Search for text patterns in files
+- `grep`, `touch`, `df`, `sed`, `which`, `export`, `pkill`, `pgrep`, `head`, `tail`, `unzip`, `mkcd`, `ll`, `find-file`, `cpy`, `pst`, `sysinfo`
+
+**Highlights:**
+- `grep` - Search for text patterns in files or pipeline
 - `touch` - Create empty file or update timestamp
-- `df` - Display disk space usage
-- `sed` - Stream editor
+- `df` - Show disk usage
+- `sed` - Find and replace in files
 - `which` - Locate command paths
 - `export` - Set environment variables
-- `pkill` - Kill processes by name
-- `pgrep` - Find processes by name
-- `head` - Display first lines of file
-- `tail` - Display last lines of file
+- `pkill`/`pgrep` - Kill or find processes by name
+- `head`/`tail` - Show first/last lines of file
 - `unzip` - Extract ZIP archives
 - `mkcd` - Create directory and navigate to it
 - `ll` - Detailed directory listing
 - `find-file` - Find files by name
-- `cpy` - Copy to clipboard
-- `pst` - Paste from clipboard
+- `cpy`/`pst` - Copy/paste clipboard
 - `sysinfo` - Display system information
 
 **Usage:**
 ```powershell
-# Search for pattern in files
 grep "error" C:\Logs
-
-# Create new file
 touch newfile.txt
-
-# Show disk usage
 df
-
-# Create directory and cd into it
 mkcd NewProject
+ll
+find-file "*.ps1"
+sysinfo
 ```
 
 ---
 
+
 ### RemoteExecution
 Executes scripts on remote computers with transcript logging.
 
-**Description:**
-Tools for running scripts remotely with built-in logging capabilities.
+**Functions:**
+- `Invoke-Script` - Run a script on a remote computer, log output to C:\temp\logs
+
+**Usage:**
+```powershell
+Invoke-Script -ComputerName "SERVER01" -FilePath "C:\Scripts\HealthCheck.ps1"
+```
 
 ---
+
 
 ### Utilities
 General-purpose utility functions for logging, file dialogs, system maintenance, and performance testing.
@@ -119,18 +156,13 @@ General-purpose utility functions for logging, file dialogs, system maintenance,
 - `Get-PubIP` - Get your public IP address
 - `winutil` - Launch Chris Titus Tech's Windows Utility
 - `Update-PowerShell` - Check for and install PowerShell updates
-- Additional file dialogs, logging, and system utilities
+- Many more: file dialogs, logging, system info, and more
 
 **Usage:**
 ```powershell
-# Get public IP
 Get-PubIP
-
-# Update PowerShell
-Update-PowerShell
-
-# Launch Windows Utility
 winutil
+Update-PowerShell
 ```
 
 ---

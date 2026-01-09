@@ -1,3 +1,38 @@
+
+#region Computer Identity Helper
+function Resolve-ComputerIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
+        [string]$Computer
+    )
+    $resolvedHost = $null
+    $resolvedIP = $null
+    try {
+        $dns = Resolve-DnsName -Name $Computer -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress }
+        if ($dns) {
+            $resolvedIP = $dns[0].IPAddress
+            $resolvedHost = $dns[0].NameHost
+        } else {
+            try {
+                $ptr = [System.Net.Dns]::GetHostEntry($Computer)
+                $resolvedHost = $ptr.HostName
+                $resolvedIP = $Computer
+            } catch {
+                $resolvedHost = $Computer
+                $resolvedIP = $Computer
+            }
+        }
+    } catch {
+        $resolvedHost = $Computer
+        $resolvedIP = $Computer
+    }
+    [PSCustomObject]@{
+        Hostname = if ($resolvedHost) { $resolvedHost } else { 'null' }
+        IP = if ($resolvedIP) { $resolvedIP } else { 'null' }
+    }
+}
+#endregion
 <#
 .SYNOPSIS
     Computer Inventory PowerShell Module
@@ -12,87 +47,15 @@
     Version: 3.0 (Converted to module format)
 #>
 
-#region Helper Functions
+#region Dependency Checks
 
-Function Write-LogMessage {
-    <#
-    .SYNOPSIS
-        Writes timestamped, color-coded log messages to console and optionally to file.
-
-    .DESCRIPTION
-        Outputs formatted log messages with timestamps, severity indicators, and color-coding.
-        Supports multiple log levels with distinct visual formatting.
-
-    .PARAMETER Message
-        The log message text to display and/or write to file.
-
-    .PARAMETER Level
-        Specifies the severity/type of the log message.
-        Valid values: "Info", "Warning", "Error", "Success", "Default"
-
-    .PARAMETER LogFile
-        Optional file path for persistent logging.
-
-    .EXAMPLE
-        Write-LogMessage "Starting process" -Level Info
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Position=0, Mandatory)]
-        [string]$Message,
-        [Parameter(Position=1)]
-        [ValidateSet("Info", "Warning", "Error", "Success", "Default")]
-        [string]$Level,
-        [Parameter(Mandatory=$false)]
-        [AllowNull()]
-        [AllowEmptyString()]
-        [string]$LogFile
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Message)) {
-        Write-Host ""
-        if ($LogFile) {
-            try {
-                "" | Out-File -FilePath $LogFile -Append -ErrorAction Stop
-            } catch {
-                Write-Warning "Failed to write to log file: $($_.Exception.Message)"
-            }
-        }
-        return
-    }
-
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-
-    if ($Level) {
-        $prefix = switch ($Level) {
-            "Info"    { "[*]" }
-            "Warning" { "[!]" }
-            "Error"   { "[!!!]" }
-            "Success" { "[+]" }
-        }
-    }
-    else {
-        $prefix = "[*]"
-        $Level = "Default"
-    }
-
-    $logEntry = "[$timestamp] $prefix $Message"
-
-    switch ($Level) {
-        "Default" { Write-Host $logEntry -ForegroundColor DarkGray }
-        "Info"    { Write-Host $logEntry -ForegroundColor White }
-        "Warning" { Write-Host $logEntry -ForegroundColor Yellow }
-        "Error"   { Write-Host $logEntry -ForegroundColor Red }
-        "Success" { Write-Host $logEntry -ForegroundColor Green }
-    }
-
-    if ($LogFile) {
-        try {
-            $logEntry | Out-File -FilePath $LogFile -Append -ErrorAction Stop
-        } catch {
-            Write-Warning "Failed to write to log file: $($_.Exception.Message)"
-        }
-    }
+# Ensure Write-LogMessage is available, otherwise download Utilities.psm1 from GitHub and import
+if (-not (Get-Command Write-LogMessage -ErrorAction SilentlyContinue)) {
+    Write-Host "Write-LogMessage not found. Downloading Utilities.psm1 from GitHub and importing..."
+    $url = "https://raw.githubusercontent.com/PostWarTacos/Powershell-Modules/main/Utilities/Utilities.psm1"
+    $localPath = Join-Path $env:TEMP 'Utilities.psm1'
+    Invoke-WebRequest -Uri $url -OutFile $localPath
+    . $localPath
 }
 
 #endregion
@@ -112,23 +75,36 @@ function Get-SharesInfo {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
-            $shares = Get-SmbShare -CimSession $ComputerName -ErrorAction Stop | 
-                Where-Object { $_.Name -notmatch '^(IPC\$|ADMIN\$|[A-Z]\$)$' }
-            return ($shares | ForEach-Object { "$($_.Name) ($($_.Path))" }) -join "; "
-        } else {
-            $shares = Get-CimInstance -ClassName Win32_Share -ComputerName $ComputerName -ErrorAction Stop |
-                Where-Object { $_.Name -notmatch '^(IPC\$|ADMIN\$|[A-Z]\$)$' }
-            return ($shares | ForEach-Object { "$($_.Name) ($($_.Path))" }) -join "; "
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+                $shares = Get-SmbShare -CimSession $identity.Hostname -ErrorAction Stop | 
+                    Where-Object { $_.Name -notmatch '^(IPC\$|ADMIN\$|[A-Z]\$)$' }
+                $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; Shares = ($shares | ForEach-Object { "$($_.Name) ($($_.Path))" }) -join "; " }
+            } else {
+                $shares = Get-CimInstance -ClassName Win32_Share -ComputerName $identity.Hostname -ErrorAction Stop |
+                    Where-Object { $_.Name -notmatch '^(IPC\$|ADMIN\$|[A-Z]\$)$' }
+                $results += [PSCustomObject]@{ Computer = $identity.Computer; Hostname = $identity.Hostname; IP = $identity.IP; Shares = ($shares | ForEach-Object { "$($_.Name) ($($_.Path))" }) -join "; " }
+            }
+        } catch {
+            $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; Shares = "ERROR: $($_.Exception.Message)" }
+        }
+    }
+    return $results
 }
 
 function Get-NetworkDetails {
@@ -144,45 +120,37 @@ function Get-NetworkDetails {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $networks = Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -ComputerName $ComputerName -ErrorAction Stop |
-            Where-Object { $_.IPEnabled -and $_.IPAddress }
-        
-        if ($networks) {
-            $network = $networks | Select-Object -First 1
-            
-            $dns = if ($network.DNSServerSearchOrder) {
-                $network.DNSServerSearchOrder -join ", "
-            } else {
-                "N/A"
-            }
-            
-            $gateway = if ($network.DefaultIPGateway) {
-                $network.DefaultIPGateway -join ", "
-            } else {
-                "N/A"
-            }
-            
-            return @{
-                DNS = $dns
-                Gateway = $gateway
-            }
-        }
-        
-        return @{
-            DNS = "N/A"
-            Gateway = "N/A"
-        }
-    } catch {
-        return @{
-            DNS = "ERROR"
-            Gateway = "ERROR"
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
         }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $networks = Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -ComputerName $identity.Hostname -ErrorAction Stop |
+                Where-Object { $_.IPEnabled -and $_.IPAddress }
+            if ($networks) {
+                $network = $networks | Select-Object -First 1
+                $dnsServers = if ($network.DNSServerSearchOrder) { $network.DNSServerSearchOrder -join ", " } else { "N/A" }
+                $gateway = if ($network.DefaultIPGateway) { $network.DefaultIPGateway -join ", " } else { "N/A" }
+                $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; DNS = $dnsServers; Gateway = $gateway }
+            } else {
+                $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; DNS = "N/A"; Gateway = "N/A" }
+            }
+        } catch {
+            $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; DNS = "ERROR"; Gateway = "ERROR" }
+        }
+    }
+    return $results
 }
 
 #endregion
@@ -202,35 +170,56 @@ function Get-ADLastLogon {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        if (Get-Module -ListAvailable -Name ActiveDirectory) {
-            Import-Module ActiveDirectory -ErrorAction SilentlyContinue
-            $computer = Get-ADComputer -Identity $ComputerName -Properties LastLogonTimeStamp -ErrorAction Stop
-            if ($computer.LastLogonTimeStamp) {
-                return [DateTime]::FromFileTime($computer.LastLogonTimeStamp)
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
+    }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $lastLogon = $null
+            if (Get-Module -ListAvailable -Name ActiveDirectory) {
+                Import-Module ActiveDirectory -ErrorAction SilentlyContinue
+                $computer = Get-ADComputer -Identity $identity.Hostname -Properties LastLogonTimeStamp -ErrorAction Stop
+                if ($computer.LastLogonTimeStamp) {
+                    $lastLogon = [DateTime]::FromFileTime($computer.LastLogonTimeStamp)
+                } else {
+                    $lastLogon = "Never"
+                }
             } else {
-                return "Never"
+                $searcher = New-Object System.DirectoryServices.DirectorySearcher
+                $searcher.Filter = "(&(objectCategory=computer)(name=$($identity.Hostname)))"
+                $searcher.PropertiesToLoad.Add("lastLogonTimeStamp") | Out-Null
+                $adSearchResult = $searcher.FindOne()
+                if ($adSearchResult -and $adSearchResult.Properties["lastLogonTimeStamp"][0]) {
+                    $lastLogon = [DateTime]::FromFileTime($adSearchResult.Properties["lastLogonTimeStamp"][0])
+                } else {
+                    $lastLogon = "Never"
+                }
             }
-        } else {
-            # Fallback to ADSI
-            $searcher = New-Object System.DirectoryServices.DirectorySearcher
-            $searcher.Filter = "(&(objectCategory=computer)(name=$ComputerName))"
-            $searcher.PropertiesToLoad.Add("lastLogonTimeStamp") | Out-Null
-            
-            $adSearchResult = $searcher.FindOne()
-            if ($adSearchResult -and $adSearchResult.Properties["lastLogonTimeStamp"][0]) {
-                return [DateTime]::FromFileTime($adSearchResult.Properties["lastLogonTimeStamp"][0])
-            } else {
-                return "Never"
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                LastLogon = $lastLogon
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                LastLogon = "ERROR: $($_.Exception.Message)"
             }
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
     }
+    return $results
 }
 
 function Get-DomainController {
@@ -246,41 +235,55 @@ function Get-DomainController {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $dc = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            try {
-                # Check if domain-joined
-                $cs = Get-CimInstance -ClassName Win32_ComputerSystem
-                if (-not $cs.PartOfDomain) {
-                    return "Not Domain Joined"
-                }
-                
-                # Get logon server from environment
-                $logonServer = $env:LOGONSERVER
-                if ($logonServer) {
-                    return $logonServer -replace '\\\\', ''
-                }
-                
-                # Fallback: Use nltest
-                $nltest = nltest /dsgetdc: 2>&1
-                if ($nltest -match 'DC:\s*\\\\(.+)') {
-                    return $matches[1]
-                }
-                
-                return "Unknown"
-            } catch {
-                return "ERROR"
-            }
-        } -ErrorAction Stop
-        
-        return $dc
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $dc = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                try {
+                    $cs = Get-CimInstance -ClassName Win32_ComputerSystem
+                    if (-not $cs.PartOfDomain) {
+                        return "Not Domain Joined"
+                    }
+                    $logonServer = $env:LOGONSERVER
+                    if ($logonServer) {
+                        return $logonServer -replace '\\', ''
+                    }
+                    $nltest = nltest /dsgetdc: 2>&1
+                    if ($nltest -match 'DC:\s*\\\\(.+)') {
+                        return $matches[1]
+                    }
+                    return "Unknown"
+                } catch {
+                    return "ERROR"
+                }
+            } -ErrorAction Stop
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                DomainController = $dc
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                DomainController = "ERROR: $($_.Exception.Message)"
+            }
+        }
+    }
+    return $results
 }
 
 #endregion
@@ -300,33 +303,53 @@ function Get-CurrentUser {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $loggedOnUser = Get-CimInstance -ClassName Win32_ComputerSystem -ComputerName $ComputerName -ErrorAction Stop
-        
-        if ($loggedOnUser.UserName) {
-            $username = $loggedOnUser.UserName.Split('\\')[-1]
-            
-            try {
-                if (Get-Module -ListAvailable -Name ActiveDirectory) {
-                    Import-Module ActiveDirectory -ErrorAction SilentlyContinue
-                    $adUser = Get-ADUser $username -ErrorAction SilentlyContinue
-                    if ($adUser) {
-                        return "$($adUser.Name) ($username)"
-                    }
-                }
-            } catch {}
-            
-            return $username
-        } else {
-            return "None"
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $loggedOnUser = Get-CimInstance -ClassName Win32_ComputerSystem -ComputerName $identity.Hostname -ErrorAction Stop
+            $currentUser = $null
+            if ($loggedOnUser.UserName) {
+                $username = $loggedOnUser.UserName.Split('\\')[-1]
+                try {
+                    if (Get-Module -ListAvailable -Name ActiveDirectory) {
+                        Import-Module ActiveDirectory -ErrorAction SilentlyContinue
+                        $adUser = Get-ADUser $username -ErrorAction SilentlyContinue
+                        if ($adUser) {
+                            $currentUser = "$($adUser.Name) ($username)"
+                        }
+                    }
+                } catch {}
+                if (-not $currentUser) { $currentUser = $username }
+            } else {
+                $currentUser = "None"
+            }
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                CurrentUser = $currentUser
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                CurrentUser = "ERROR: $($_.Exception.Message)"
+            }
+        }
+    }
+    return $results
 }
 
 function Get-LastLoggedOnUser {
@@ -342,37 +365,58 @@ function Get-LastLoggedOnUser {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $userDir = Get-ChildItem "\\$ComputerName\c$\Users" -ErrorAction Stop |
-            Where-Object {
-                $_.PSIsContainer -and 
-                $_.Name -notmatch '^(Public|Default|Default User|All Users|Admin|Administrator)$'
-            } |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-        
-        if ($userDir) {
-            try {
-                if (Get-Module -ListAvailable -Name ActiveDirectory) {
-                    Import-Module ActiveDirectory -ErrorAction SilentlyContinue
-                    $adUser = Get-ADUser $userDir.Name -ErrorAction SilentlyContinue
-                    if ($adUser) {
-                        return "$($adUser.Name) ($($userDir.Name))"
-                    }
-                }
-            } catch {}
-            
-            return $userDir.Name
-        } else {
-            return "Unknown"
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $userDir = Get-ChildItem "\\$($identity.Hostname)\c$\Users" -ErrorAction Stop |
+                Where-Object {
+                    $_.PSIsContainer -and 
+                    $_.Name -notmatch '^(Public|Default|Default User|All Users|Admin|Administrator)$'
+                } |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1
+            $lastUser = $null
+            if ($userDir) {
+                try {
+                    if (Get-Module -ListAvailable -Name ActiveDirectory) {
+                        Import-Module ActiveDirectory -ErrorAction SilentlyContinue
+                        $adUser = Get-ADUser $userDir.Name -ErrorAction SilentlyContinue
+                        if ($adUser) {
+                            $lastUser = "$($adUser.Name) ($($userDir.Name))"
+                        }
+                    }
+                } catch {}
+                if (-not $lastUser) { $lastUser = $userDir.Name }
+            } else {
+                $lastUser = "Unknown"
+            }
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                LastLoggedOnUser = $lastUser
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                LastLoggedOnUser = "ERROR: $($_.Exception.Message)"
+            }
+        }
+    }
+    return $results
 }
 
 function Get-PrimaryUser {
@@ -388,54 +432,72 @@ function Get-PrimaryUser {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $userDirs = Get-ChildItem "\\$ComputerName\c$\Users" -ErrorAction Stop |
-            Where-Object {
-                $_.PSIsContainer -and 
-                $_.Name -notmatch '^(Public|Default|Default User|All Users|Admin|Administrator)$'
-            }
-        
-        if ($userDirs) {
-            $userStats = foreach ($userDir in $userDirs) {
-                try {
-                    $size = (Get-ChildItem $userDir.FullName -Recurse -ErrorAction SilentlyContinue | 
-                        Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
-                    
-                    [PSCustomObject]@{
-                        UserName = $userDir.Name
-                        ProfileSize = $size
-                        LastAccess = $userDir.LastWriteTime
-                    }
-                } catch {}
-            }
-            
-            $primaryUser = $userStats | Sort-Object ProfileSize -Descending | Select-Object -First 1
-            
-            if ($primaryUser) {
-                try {
-                    if (Get-Module -ListAvailable -Name ActiveDirectory) {
-                        Import-Module ActiveDirectory -ErrorAction SilentlyContinue
-                        $adUser = Get-ADUser $primaryUser.UserName -ErrorAction SilentlyContinue
-                        if ($adUser) {
-                            return "$($adUser.Name) ($($primaryUser.UserName))"
-                        }
-                    }
-                } catch {}
-                
-                return $primaryUser.UserName
-            } else {
-                return "Unknown"
-            }
-        } else {
-            return "No Users"
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $userDirs = Get-ChildItem "\\$($identity.Hostname)\c$\Users" -ErrorAction Stop |
+                Where-Object {
+                    $_.PSIsContainer -and 
+                    $_.Name -notmatch '^(Public|Default|Default User|All Users|Admin|Administrator)$'
+                }
+            $primaryUser = $null
+            if ($userDirs) {
+                $userStats = foreach ($userDir in $userDirs) {
+                    try {
+                        $size = (Get-ChildItem $userDir.FullName -Recurse -ErrorAction SilentlyContinue | 
+                            Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+                        [PSCustomObject]@{
+                            UserName = $userDir.Name
+                            ProfileSize = $size
+                            LastAccess = $userDir.LastWriteTime
+                        }
+                    } catch {}
+                }
+                $primaryUserObj = $userStats | Sort-Object ProfileSize -Descending | Select-Object -First 1
+                if ($primaryUserObj) {
+                    try {
+                        if (Get-Module -ListAvailable -Name ActiveDirectory) {
+                            Import-Module ActiveDirectory -ErrorAction SilentlyContinue
+                            $adUser = Get-ADUser $primaryUserObj.UserName -ErrorAction SilentlyContinue
+                            if ($adUser) {
+                                $primaryUser = "$($adUser.Name) ($($primaryUserObj.UserName))"
+                            }
+                        }
+                    } catch {}
+                    if (-not $primaryUser) { $primaryUser = $primaryUserObj.UserName }
+                } else {
+                    $primaryUser = "Unknown"
+                }
+            } else {
+                $primaryUser = "No Users"
+            }
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                PrimaryUser = $primaryUser
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                PrimaryUser = "ERROR: $($_.Exception.Message)"
+            }
+        }
+    }
+    return $results
 }
 
 function Get-LocalAdmins {
@@ -451,27 +513,47 @@ function Get-LocalAdmins {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $admins = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            try {
-                $group = Get-LocalGroup -Name "Administrators" -ErrorAction Stop
-                $members = Get-LocalGroupMember -Group $group -ErrorAction Stop
-                return ($members | ForEach-Object { $_.Name.Split('\\')[-1] }) -join "; "
-            } catch {
-                $output = net localgroup administrators
-                $members = $output | Where-Object { $_ -match '^[^-]' -and $_ -notmatch '^(Alias name|Comment|Members|The command completed)' -and $_.Trim() -ne '' }
-                return ($members | ForEach-Object { $_.Trim() }) -join "; "
-            }
-        } -ErrorAction Stop
-        
-        return $admins
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $admins = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                try {
+                    $group = Get-LocalGroup -Name "Administrators" -ErrorAction Stop
+                    $members = Get-LocalGroupMember -Group $group -ErrorAction Stop
+                    return ($members | ForEach-Object { $_.Name.Split('\\')[-1] }) -join "; "
+                } catch {
+                    $output = net localgroup administrators
+                    $members = $output | Where-Object { $_ -match '^[^-]' -and $_ -notmatch '^(Alias name|Comment|Members|The command completed)' -and $_.Trim() -ne '' }
+                    return ($members | ForEach-Object { $_.Trim() }) -join "; "
+                }
+            } -ErrorAction Stop
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                LocalAdmins = $admins
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                LocalAdmins = "ERROR: $($_.Exception.Message)"
+            }
+        }
+    }
+    return $results
 }
 
 #endregion
@@ -491,25 +573,48 @@ function Get-DriveSpace {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $drive = Get-CimInstance -ClassName Win32_Volume -ComputerName $ComputerName -Filter "drivetype = 3" -ErrorAction Stop |
-            Where-Object { $_.DriveLetter -eq 'C:' } |
-            Select-Object -First 1
-        
-        if ($drive) {
-            $freeGB = [math]::Round($drive.FreeSpace / 1GB, 2)
-            $totalGB = [math]::Round($drive.Capacity / 1GB, 2)
-            $percentFree = [math]::Round(($drive.FreeSpace / $drive.Capacity) * 100, 1)
-            return "$freeGB GB free of $totalGB GB ($percentFree%)"
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
         }
-        return "N/A"
-    } catch {
-        return "ERROR"
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $drive = Get-CimInstance -ClassName Win32_Volume -ComputerName $identity.Hostname -Filter "drivetype = 3" -ErrorAction Stop |
+                Where-Object { $_.DriveLetter -eq 'C:' } |
+                Select-Object -First 1
+            $driveSpace = $null
+            if ($drive) {
+                $freeGB = [math]::Round($drive.FreeSpace / 1GB, 2)
+                $totalGB = [math]::Round($drive.Capacity / 1GB, 2)
+                $percentFree = [math]::Round(($drive.FreeSpace / $drive.Capacity) * 100, 1)
+                $driveSpace = "$freeGB GB free of $totalGB GB ($percentFree%)"
+            } else {
+                $driveSpace = "N/A"
+            }
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                DriveSpace = $driveSpace
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                DriveSpace = "ERROR"
+            }
+        }
+    }
+    return $results
 }
 
 function Get-ChassisType {
@@ -525,78 +630,93 @@ function Get-ChassisType {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ComputerName $ComputerName -ErrorAction Stop
-        $bios = Get-CimInstance -ClassName Win32_BIOS -ComputerName $ComputerName -ErrorAction Stop
-        $enclosure = Get-CimInstance -ClassName Win32_SystemEnclosure -ComputerName $ComputerName -ErrorAction Stop
-        
-        $isVM = $false
-        $vmType = ""
-        
-        $model = $computer.Model.ToLower()
-        $manufacturer = $computer.Manufacturer.ToLower()
-        $biosManufacturer = $bios.Manufacturer.ToLower()
-        
-        if ($model -match 'virtual|vmware|vbox|kvm|xen|qemu') {
-            $isVM = $true
-            if ($model -match 'vmware') { $vmType = "VMware" }
-            elseif ($model -match 'virtual machine') { $vmType = "Hyper-V" }
-            elseif ($model -match 'vbox|virtualbox') { $vmType = "VirtualBox" }
-            elseif ($model -match 'kvm') { $vmType = "KVM" }
-            elseif ($model -match 'xen') { $vmType = "Xen" }
-            elseif ($model -match 'qemu') { $vmType = "QEMU" }
-            else { $vmType = "VM" }
-        } elseif ($manufacturer -match 'vmware|microsoft corporation' -or $biosManufacturer -match 'vmware|hyper-v|xen|qemu|innotek|parallels') {
-            $isVM = $true
-            if ($manufacturer -match 'vmware' -or $biosManufacturer -match 'vmware') { $vmType = "VMware" }
-            elseif ($biosManufacturer -match 'hyper-v' -or ($manufacturer -match 'microsoft' -and $model -match 'virtual')) { $vmType = "Hyper-V" }
-            elseif ($biosManufacturer -match 'innotek') { $vmType = "VirtualBox" }
-            elseif ($biosManufacturer -match 'xen') { $vmType = "Xen" }
-            elseif ($biosManufacturer -match 'qemu') { $vmType = "QEMU" }
-            elseif ($biosManufacturer -match 'parallels') { $vmType = "Parallels" }
-            else { $vmType = "VM" }
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
         }
-        
-        $chassisName = "Unknown"
-        if ($enclosure -and $enclosure.ChassisTypes) {
-            $chassisType = $enclosure.ChassisTypes[0]
-            
-            $chassisName = switch ($chassisType) {
-                {$_ -in 3, 4, 5, 6, 7, 15, 16} { "Desktop" }
-                {$_ -in 8, 9, 10, 11, 12, 14, 18, 21} { "Laptop" }
-                13 { "All-in-One" }
-                17 { "Server (Tower)" }
-                23 { "Server (Rack)" }
-                24 { "Server (Sealed)" }
-                28 { "Server (Blade Enclosure)" }
-                29 { "Server (Blade)" }
-                30 { "Tablet" }
-                31 { "Convertible" }
-                32 { "Detachable" }
-                default { "Unknown ($chassisType)" }
-            }
-        }
-        
-        if ($chassisName -eq "Unknown" -or $chassisName -match "Unknown \(\d+\)") {
-            $battery = Get-CimInstance -ClassName Win32_Battery -ComputerName $ComputerName -ErrorAction SilentlyContinue
-            if ($battery) {
-                $chassisName = "Laptop (Battery Detected)"
-            }
-        }
-        
-        $chassisResult = @{ ChassisType = $chassisName }
-        if ($isVM) {
-            $chassisResult.VMType = $vmType
-        }
-        return $chassisResult
-        
-    } catch {
-        return @{ ChassisType = "ERROR" }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ComputerName $identity.Hostname -ErrorAction Stop
+            $bios = Get-CimInstance -ClassName Win32_BIOS -ComputerName $identity.Hostname -ErrorAction Stop
+            $enclosure = Get-CimInstance -ClassName Win32_SystemEnclosure -ComputerName $identity.Hostname -ErrorAction Stop
+            $isVM = $false
+            $vmType = ""
+            $model = $computer.Model.ToLower()
+            $manufacturer = $computer.Manufacturer.ToLower()
+            $biosManufacturer = $bios.Manufacturer.ToLower()
+            if ($model -match 'virtual|vmware|vbox|kvm|xen|qemu') {
+                $isVM = $true
+                if ($model -match 'vmware') { $vmType = "VMware" }
+                elseif ($model -match 'virtual machine') { $vmType = "Hyper-V" }
+                elseif ($model -match 'vbox|virtualbox') { $vmType = "VirtualBox" }
+                elseif ($model -match 'kvm') { $vmType = "KVM" }
+                elseif ($model -match 'xen') { $vmType = "Xen" }
+                elseif ($model -match 'qemu') { $vmType = "QEMU" }
+                else { $vmType = "VM" }
+            } elseif ($manufacturer -match 'vmware|microsoft corporation' -or $biosManufacturer -match 'vmware|hyper-v|xen|qemu|innotek|parallels') {
+                $isVM = $true
+                if ($manufacturer -match 'vmware' -or $biosManufacturer -match 'vmware') { $vmType = "VMware" }
+                elseif ($biosManufacturer -match 'hyper-v' -or ($manufacturer -match 'microsoft' -and $model -match 'virtual')) { $vmType = "Hyper-V" }
+                elseif ($biosManufacturer -match 'innotek') { $vmType = "VirtualBox" }
+                elseif ($biosManufacturer -match 'xen') { $vmType = "Xen" }
+                elseif ($biosManufacturer -match 'qemu') { $vmType = "QEMU" }
+                elseif ($biosManufacturer -match 'parallels') { $vmType = "Parallels" }
+                else { $vmType = "VM" }
+            }
+            $chassisName = "Unknown"
+            if ($enclosure -and $enclosure.ChassisTypes) {
+                $chassisType = $enclosure.ChassisTypes[0]
+                $chassisName = switch ($chassisType) {
+                    {$_ -in 3, 4, 5, 6, 7, 15, 16} { "Desktop" }
+                    {$_ -in 8, 9, 10, 11, 12, 14, 18, 21} { "Laptop" }
+                    13 { "All-in-One" }
+                    17 { "Server (Tower)" }
+                    23 { "Server (Rack)" }
+                    24 { "Server (Sealed)" }
+                    28 { "Server (Blade Enclosure)" }
+                    29 { "Server (Blade)" }
+                    30 { "Tablet" }
+                    31 { "Convertible" }
+                    32 { "Detachable" }
+                    default { "Unknown ($chassisType)" }
+                }
+            }
+            if ($chassisName -eq "Unknown" -or $chassisName -match "Unknown \(\d+\)") {
+                $battery = Get-CimInstance -ClassName Win32_Battery -ComputerName $identity.Hostname -ErrorAction SilentlyContinue
+                if ($battery) {
+                    $chassisName = "Laptop (Battery Detected)"
+                }
+            }
+            $chassisResult = @{ ChassisType = $chassisName }
+            if ($isVM) {
+                $chassisResult.VMType = $vmType
+            }
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                ChassisType = $chassisResult.ChassisType
+                VMType = if ($chassisResult.ContainsKey('VMType')) { $chassisResult.VMType } else { 'N/A' }
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                ChassisType = "ERROR"
+                VMType = "ERROR"
+            }
+        }
+    }
+    return $results
 }
 
 function Get-MonitorCount {
@@ -612,30 +732,55 @@ function Get-MonitorCount {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $monitors = Get-CimInstance -ClassName WmiMonitorID -Namespace root\wmi -ComputerName $ComputerName -ErrorAction Stop
-        
-        if ($monitors) {
-            $count = ($monitors | Measure-Object).Count
-            return "$count monitor(s)"
-        } else {
-            return "0 (or N/A)"
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
         }
-    } catch {
-        try {
-            $displays = Get-CimInstance -ClassName Win32_DesktopMonitor -ComputerName $ComputerName -ErrorAction Stop
-            if ($displays) {
-                $count = ($displays | Measure-Object).Count
-                return "$count monitor(s)"
-            }
-        } catch {}
-        
-        return "N/A"
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $monitors = Get-CimInstance -ClassName WmiMonitorID -Namespace root\wmi -ComputerName $identity.Hostname -ErrorAction Stop
+            $monitorCount = $null
+            if ($monitors) {
+                $count = ($monitors | Measure-Object).Count
+                $monitorCount = "$count monitor(s)"
+            } else {
+                $monitorCount = "0 (or N/A)"
+            }
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                MonitorCount = $monitorCount
+            }
+        } catch {
+            try {
+                $displays = Get-CimInstance -ClassName Win32_DesktopMonitor -ComputerName $identity.Hostname -ErrorAction Stop
+                if ($displays) {
+                    $count = ($displays | Measure-Object).Count
+                    $monitorCount = "$count monitor(s)"
+                } else {
+                    $monitorCount = "N/A"
+                }
+            } catch {
+                $monitorCount = "N/A"
+            }
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                MonitorCount = $monitorCount
+            }
+        }
+    }
+    return $results
 }
 
 function Get-BatteryHealth {
@@ -649,83 +794,87 @@ function Get-BatteryHealth {
     .EXAMPLE
         Get-BatteryHealth -ComputerName "LAPTOP01"
     #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
-    )
-    
-    try {
-        $batteryInfo = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [string[]]$ComputerName
+        )
+
+        if (-not $ComputerName) {
+            $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+            if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+                Write-LogMessage "No computer name provided or selected." -Level Error
+                return
+            }
+        }
+
+        $results = @()
+        foreach ($name in $ComputerName) {
+            $identity = Resolve-ComputerIdentity $name
             try {
-                $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction Stop
-                
-                if (-not $battery) {
-                    return [PSCustomObject]@{
-                        Status = "No Battery"
-                        Health = $null
-                    }
-                }
-                
-                $designCapacity = $battery.DesignCapacity
-                $fullChargeCapacity = $battery.FullChargeCapacity
-                
-                if ($designCapacity -and $fullChargeCapacity -and $designCapacity -gt 0) {
-                    $healthPercent = [math]::Round(($fullChargeCapacity / $designCapacity) * 100, 1)
-                    
-                    $healthStatus = if ($healthPercent -ge 80) { "Good" }
-                                   elseif ($healthPercent -ge 60) { "Fair" }
-                                   else { "Poor" }
-                    
-                    return [PSCustomObject]@{
-                        Status = "Present"
-                        Health = "$healthPercent% ($healthStatus)"
-                    }
-                } else {
+                $batteryInfo = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
                     try {
-                        $batteryStatic = Get-CimInstance -Namespace root\wmi -ClassName BatteryStaticData -ErrorAction Stop | Select-Object -First 1
-                        $batteryStatus = Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction Stop | Select-Object -First 1
-                        
-                        if ($batteryStatic -and $batteryStatus) {
-                            $design = $batteryStatic.DesignedCapacity
-                            $current = $batteryStatus.FullChargedCapacity
-                            
-                            if ($design -gt 0) {
-                                $healthPercent = [math]::Round(($current / $design) * 100, 1)
-                                
-                                $healthStatus = if ($healthPercent -ge 80) { "Good" }
-                                               elseif ($healthPercent -ge 60) { "Fair" }
-                                               else { "Poor" }
-                                
-                                return [PSCustomObject]@{
-                                    Status = "Present"
-                                    Health = "$healthPercent% ($healthStatus)"
-                                }
+                        $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction Stop
+                        if (-not $battery) {
+                            return [PSCustomObject]@{
+                                Status = "No Battery"
+                                Health = $null
                             }
                         }
-                    } catch {}
-                    
-                    return [PSCustomObject]@{
-                        Status = "Present"
-                        Health = "Unknown (capacity data unavailable)"
+                        $designCapacity = $battery.DesignCapacity
+                        $fullChargeCapacity = $battery.FullChargeCapacity
+                        if ($designCapacity -and $fullChargeCapacity -and $designCapacity -gt 0) {
+                            $healthPercent = [math]::Round(($fullChargeCapacity / $designCapacity) * 100, 1)
+                            $healthStatus = if ($healthPercent -ge 80) { "Good" } elseif ($healthPercent -ge 60) { "Fair" } else { "Poor" }
+                            return [PSCustomObject]@{
+                                Status = "Present"
+                                Health = "$healthPercent% ($healthStatus)"
+                            }
+                        } else {
+                            try {
+                                $batteryStatic = Get-CimInstance -Namespace root\wmi -ClassName BatteryStaticData -ErrorAction Stop | Select-Object -First 1
+                                $batteryStatus = Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction Stop | Select-Object -First 1
+                                if ($batteryStatic -and $batteryStatus) {
+                                    $design = $batteryStatic.DesignedCapacity
+                                    $current = $batteryStatus.FullChargedCapacity
+                                    if ($design -gt 0) {
+                                        $healthPercent = [math]::Round(($current / $design) * 100, 1)
+                                        $healthStatus = if ($healthPercent -ge 80) { "Good" } elseif ($healthPercent -ge 60) { "Fair" } else { "Poor" }
+                                        return [PSCustomObject]@{
+                                            Status = "Present"
+                                            Health = "$healthPercent% ($healthStatus)"
+                                        }
+                                    }
+                                }
+                            } catch {}
+                            return [PSCustomObject]@{
+                                Status = "Present"
+                                Health = "Unknown (capacity data unavailable)"
+                            }
+                        }
+                    } catch {
+                        return [PSCustomObject]@{
+                            Status = "No Battery"
+                            Health = $null
+                        }
                     }
+                } -ErrorAction Stop
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    BatteryStatus = $batteryInfo.Status
+                    BatteryHealth = $batteryInfo.Health
                 }
             } catch {
-                return [PSCustomObject]@{
-                    Status = "No Battery"
-                    Health = $null
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    BatteryStatus = "ERROR"
+                    BatteryHealth = "ERROR: $($_.Exception.Message)"
                 }
             }
-        } -ErrorAction Stop
-        
-        if ($batteryInfo.Health -ne $null) {
-            return $batteryInfo.Health
-        } else {
-            return $batteryInfo.Status
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
-    }
+        return $results
 }
 
 #endregion
@@ -743,32 +892,51 @@ function Get-TPMStatus {
     .EXAMPLE
         Get-TPMStatus -ComputerName "PC01"
     #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
-    )
-    
-    try {
-        $tpm = Get-CimInstance -Namespace "root\CIMv2\Security\MicrosoftTpm" -ClassName Win32_Tpm -ComputerName $ComputerName -ErrorAction Stop
-        
-        if ($tpm) {
-            $enabled = $tpm.IsEnabled_InitialValue
-            $activated = $tpm.IsActivated_InitialValue
-            
-            if ($enabled -and $activated) {
-                return "Enabled & Activated"
-            } elseif ($enabled) {
-                return "Enabled Only"
-            } else {
-                return "Disabled"
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [string[]]$ComputerName
+        )
+
+        if (-not $ComputerName) {
+            $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+            if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+                Write-LogMessage "No computer name provided or selected." -Level Error
+                return
             }
-        } else {
-            return "Not Present"
         }
-    } catch {
-        return "Not Available"
-    }
+
+        $results = @()
+        foreach ($name in $ComputerName) {
+            $identity = Resolve-ComputerIdentity $name
+            try {
+                $tpm = Get-CimInstance -Namespace "root\CIMv2\Security\MicrosoftTpm" -ClassName Win32_Tpm -ComputerName $identity.Hostname -ErrorAction Stop
+                $status = "Not Present"
+                if ($tpm) {
+                    $enabled = $tpm.IsEnabled_InitialValue
+                    $activated = $tpm.IsActivated_InitialValue
+                    if ($enabled -and $activated) {
+                        $status = "Enabled & Activated"
+                    } elseif ($enabled) {
+                        $status = "Enabled Only"
+                    } else {
+                        $status = "Disabled"
+                    }
+                }
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    TPMStatus = $status
+                }
+            } catch {
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    TPMStatus = "Not Available"
+                }
+            }
+        }
+        return $results
 }
 
 function Get-BitLockerStatus {
@@ -782,39 +950,58 @@ function Get-BitLockerStatus {
     .EXAMPLE
         Get-BitLockerStatus -ComputerName "PC01"
     #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
-    )
-    
-    try {
-        $blv = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [string[]]$ComputerName
+        )
+
+        if (-not $ComputerName) {
+            $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+            if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+                Write-LogMessage "No computer name provided or selected." -Level Error
+                return
+            }
+        }
+
+        $results = @()
+        foreach ($name in $ComputerName) {
+            $identity = Resolve-ComputerIdentity $name
             try {
-                $vol = Get-BitLockerVolume -MountPoint "C:" -ErrorAction Stop
-                $status = $vol.ProtectionStatus
-                $method = ($vol.KeyProtector | Where-Object { $_.KeyProtectorType -ne 'RecoveryPassword' } | Select-Object -First 1).KeyProtectorType
-                
-                if ($status -eq 'On') {
-                    if ($method) {
-                        return "Encrypted ($method)"
-                    } else {
-                        return "Encrypted"
+                $blv = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    try {
+                        $vol = Get-BitLockerVolume -MountPoint "C:" -ErrorAction Stop
+                        $status = $vol.ProtectionStatus
+                        $method = ($vol.KeyProtector | Where-Object { $_.KeyProtectorType -ne 'RecoveryPassword' } | Select-Object -First 1).KeyProtectorType
+                        if ($status -eq 'On') {
+                            if ($method) {
+                                return "Encrypted ($method)"
+                            } else {
+                                return "Encrypted"
+                            }
+                        } elseif ($status -eq 'Off') {
+                            return "Not Encrypted"
+                        } else {
+                            return "Unknown"
+                        }
+                    } catch {
+                        return "N/A"
                     }
-                } elseif ($status -eq 'Off') {
-                    return "Not Encrypted"
-                } else {
-                    return "Unknown"
+                } -ErrorAction Stop
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    BitLockerStatus = $blv
                 }
             } catch {
-                return "N/A"
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    BitLockerStatus = "N/A"
+                }
             }
-        } -ErrorAction Stop
-        
-        return $blv
-    } catch {
-        return "N/A"
-    }
+        }
+        return $results
 }
 
 function Get-WindowsDefenderInfo {
@@ -828,100 +1015,117 @@ function Get-WindowsDefenderInfo {
     .EXAMPLE
         Get-WindowsDefenderInfo -ComputerName "PC01"
     #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
-    )
-    
-    try {
-        $defenderInfo = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [string[]]$ComputerName
+        )
+
+        if (-not $ComputerName) {
+            $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+            if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+                Write-LogMessage "No computer name provided or selected." -Level Error
+                return
+            }
+        }
+
+        $results = @()
+        foreach ($name in $ComputerName) {
+            $identity = Resolve-ComputerIdentity $name
             try {
-                $mpPreference = Get-MpComputerStatus -ErrorAction Stop
-                
-                $version = $mpPreference.AMProductVersion
-                $signatureVersion = $mpPreference.AntivirusSignatureVersion
-                $signatureLastUpdated = $mpPreference.AntivirusSignatureLastUpdated
-                
-                $quickScanTime = $mpPreference.QuickScanEndTime
-                $fullScanTime = $mpPreference.FullScanEndTime
-                
-                $lastScanType = "Never"
-                $lastScanTime = $null
-                
-                if ($quickScanTime -and $fullScanTime) {
-                    if ($quickScanTime -gt $fullScanTime) {
-                        $lastScanType = "Quick"
-                        $lastScanTime = $quickScanTime
-                    } else {
-                        $lastScanType = "Full"
-                        $lastScanTime = $fullScanTime
+                $defenderInfo = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    try {
+                        $mpPreference = Get-MpComputerStatus -ErrorAction Stop
+                        $version = $mpPreference.AMProductVersion
+                        $signatureVersion = $mpPreference.AntivirusSignatureVersion
+                        $signatureLastUpdated = $mpPreference.AntivirusSignatureLastUpdated
+                        $quickScanTime = $mpPreference.QuickScanEndTime
+                        $fullScanTime = $mpPreference.FullScanEndTime
+                        $lastScanType = "Never"
+                        $lastScanTime = $null
+                        if ($quickScanTime -and $fullScanTime) {
+                            if ($quickScanTime -gt $fullScanTime) {
+                                $lastScanType = "Quick"
+                                $lastScanTime = $quickScanTime
+                            } else {
+                                $lastScanType = "Full"
+                                $lastScanTime = $fullScanTime
+                            }
+                        } elseif ($quickScanTime) {
+                            $lastScanType = "Quick"
+                            $lastScanTime = $quickScanTime
+                        } elseif ($fullScanTime) {
+                            $lastScanType = "Full"
+                            $lastScanTime = $fullScanTime
+                        }
+                        $realtimeProtection = $mpPreference.RealTimeProtectionEnabled
+                        $status = if ($realtimeProtection) { "Enabled" } else { "Disabled" }
+                        return [PSCustomObject]@{
+                            Version = $version
+                            SignatureVersion = $signatureVersion
+                            SignatureLastUpdated = $signatureLastUpdated
+                            LastScanType = $lastScanType
+                            LastScanTime = $lastScanTime
+                            Status = $status
+                        }
+                    } catch {
+                        try {
+                            $service = Get-Service -Name WinDefend -ErrorAction Stop
+                            if ($service.Status -eq 'Running') {
+                                return [PSCustomObject]@{
+                                    Version = "Unknown"
+                                    SignatureVersion = "Unknown"
+                                    SignatureLastUpdated = $null
+                                    LastScanType = "Unknown"
+                                    LastScanTime = $null
+                                    Status = "Service Running (Limited Info)"
+                                }
+                            } else {
+                                return [PSCustomObject]@{
+                                    Version = "N/A"
+                                    SignatureVersion = "N/A"
+                                    SignatureLastUpdated = $null
+                                    LastScanType = "N/A"
+                                    LastScanTime = $null
+                                    Status = "Service Stopped"
+                                }
+                            }
+                        } catch {
+                            return [PSCustomObject]@{
+                                Version = "N/A"
+                                SignatureVersion = "N/A"
+                                SignatureLastUpdated = $null
+                                LastScanType = "N/A"
+                                LastScanTime = $null
+                                Status = "Not Installed"
+                            }
+                        }
                     }
-                } elseif ($quickScanTime) {
-                    $lastScanType = "Quick"
-                    $lastScanTime = $quickScanTime
-                } elseif ($fullScanTime) {
-                    $lastScanType = "Full"
-                    $lastScanTime = $fullScanTime
-                }
-                
-                $realtimeProtection = $mpPreference.RealTimeProtectionEnabled
-                $status = if ($realtimeProtection) { "Enabled" } else { "Disabled" }
-                
-                return [PSCustomObject]@{
-                    Version = $version
-                    SignatureVersion = $signatureVersion
-                    SignatureLastUpdated = $signatureLastUpdated
-                    LastScanType = $lastScanType
-                    LastScanTime = $lastScanTime
-                    Status = $status
+                } -ErrorAction Stop
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    Version = $defenderInfo.Version
+                    SignatureVersion = $defenderInfo.SignatureVersion
+                    SignatureLastUpdated = $defenderInfo.SignatureLastUpdated
+                    LastScanType = $defenderInfo.LastScanType
+                    LastScanTime = $defenderInfo.LastScanTime
+                    Status = $defenderInfo.Status
                 }
             } catch {
-                try {
-                    $service = Get-Service -Name WinDefend -ErrorAction Stop
-                    if ($service.Status -eq 'Running') {
-                        return [PSCustomObject]@{
-                            Version = "Unknown"
-                            SignatureVersion = "Unknown"
-                            SignatureLastUpdated = $null
-                            LastScanType = "Unknown"
-                            LastScanTime = $null
-                            Status = "Service Running (Limited Info)"
-                        }
-                    } else {
-                        return [PSCustomObject]@{
-                            Version = "N/A"
-                            SignatureVersion = "N/A"
-                            SignatureLastUpdated = $null
-                            LastScanType = "N/A"
-                            LastScanTime = $null
-                            Status = "Service Stopped"
-                        }
-                    }
-                } catch {
-                    return [PSCustomObject]@{
-                        Version = "N/A"
-                        SignatureVersion = "N/A"
-                        SignatureLastUpdated = $null
-                        LastScanType = "N/A"
-                        LastScanTime = $null
-                        Status = "Not Installed"
-                    }
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    Version = "ERROR"
+                    SignatureVersion = "ERROR"
+                    SignatureLastUpdated = $null
+                    LastScanType = "ERROR"
+                    LastScanTime = $null
+                    Status = "ERROR: $($_.Exception.Message)"
                 }
             }
-        } -ErrorAction Stop
-        
-        return $defenderInfo
-    } catch {
-        return [PSCustomObject]@{
-            Version = "ERROR"
-            SignatureVersion = "ERROR"
-            SignatureLastUpdated = $null
-            LastScanType = "ERROR"
-            LastScanTime = $null
-            Status = "ERROR: $($_.Exception.Message)"
         }
-    }
+        return $results
 }
 
 #endregion
@@ -939,48 +1143,63 @@ function Get-LastWindowsUpdate {
     .EXAMPLE
         Get-LastWindowsUpdate -ComputerName "PC01"
     #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
-    )
-    
-    try {
-        $lastUpdate = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [string[]]$ComputerName
+        )
+
+        if (-not $ComputerName) {
+            $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+            if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+                Write-LogMessage "No computer name provided or selected." -Level Error
+                return
+            }
+        }
+
+        $results = @()
+        foreach ($name in $ComputerName) {
+            $identity = Resolve-ComputerIdentity $name
             try {
-                $session = New-Object -ComObject Microsoft.Update.Session
-                $searcher = $session.CreateUpdateSearcher()
-                $historyCount = $searcher.GetTotalHistoryCount()
-                
-                if ($historyCount -gt 0) {
-                    $history = $searcher.QueryHistory(0, 1) | Select-Object -First 1
-                    return $history.Date
-                } else {
-                    return $null
+                $lastUpdate = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    try {
+                        $session = New-Object -ComObject Microsoft.Update.Session
+                        $searcher = $session.CreateUpdateSearcher()
+                        $historyCount = $searcher.GetTotalHistoryCount()
+                        if ($historyCount -gt 0) {
+                            $history = $searcher.QueryHistory(0, 1) | Select-Object -First 1
+                            return $history.Date
+                        } else {
+                            return $null
+                        }
+                    } catch {
+                        try {
+                            $cbsLog = "C:\\Windows\\Logs\\CBS\\CBS.log"
+                            if (Test-Path $cbsLog) {
+                                $lastLine = Get-Content $cbsLog -Tail 100 | Where-Object { $_ -match 'Installed|Updated' } | Select-Object -Last 1
+                                if ($lastLine -match '(\d{4}-\d{2}-\d{2})') {
+                                    return [DateTime]::Parse($matches[1])
+                                }
+                            }
+                        } catch {}
+                        return $null
+                    }
+                } -ErrorAction Stop
+                $dateStr = if ($lastUpdate) { $lastUpdate.ToString("yyyy-MM-dd") } else { "Unknown" }
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    LastWindowsUpdate = $dateStr
                 }
             } catch {
-                try {
-                    $cbsLog = "C:\Windows\Logs\CBS\CBS.log"
-                    if (Test-Path $cbsLog) {
-                        $lastLine = Get-Content $cbsLog -Tail 100 | Where-Object { $_ -match 'Installed|Updated' } | Select-Object -Last 1
-                        if ($lastLine -match '(\d{4}-\d{2}-\d{2})') {
-                            return [DateTime]::Parse($matches[1])
-                        }
-                    }
-                } catch {}
-                
-                return $null
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    LastWindowsUpdate = "ERROR"
+                }
             }
-        } -ErrorAction Stop
-        
-        if ($lastUpdate) {
-            return $lastUpdate.ToString("yyyy-MM-dd")
-        } else {
-            return "Unknown"
         }
-    } catch {
-        return "ERROR"
-    }
+        return $results
 }
 
 function Get-PendingUpdatesCount {
@@ -994,34 +1213,55 @@ function Get-PendingUpdatesCount {
     .EXAMPLE
         Get-PendingUpdatesCount -ComputerName "PC01"
     #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
-    )
-    
-    try {
-        $updateCount = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            try {
-                $session = New-Object -ComObject Microsoft.Update.Session
-                $searcher = $session.CreateUpdateSearcher()
-                $searchResult = $searcher.Search("IsInstalled=0 and Type='Software'")
-                return $searchResult.Updates.Count
-            } catch {
-                return "ERROR"
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [string[]]$ComputerName
+        )
+
+        if (-not $ComputerName) {
+            $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+            if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+                Write-LogMessage "No computer name provided or selected." -Level Error
+                return
             }
-        } -ErrorAction Stop
-        
-        if ($updateCount -eq "ERROR") {
-            return "ERROR"
-        } elseif ($updateCount -eq 0) {
-            return "0 (Up to date)"
-        } else {
-            return "$updateCount pending"
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
-    }
+
+        $results = @()
+        foreach ($name in $ComputerName) {
+            $identity = Resolve-ComputerIdentity $name
+            try {
+                $updateCount = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    try {
+                        $session = New-Object -ComObject Microsoft.Update.Session
+                        $searcher = $session.CreateUpdateSearcher()
+                        $searchResult = $searcher.Search("IsInstalled=0 and Type='Software'")
+                        return $searchResult.Updates.Count
+                    } catch {
+                        return "ERROR"
+                    }
+                } -ErrorAction Stop
+                $pendingStr = if ($updateCount -eq "ERROR") {
+                    "ERROR"
+                } elseif ($updateCount -eq 0) {
+                    "0 (Up to date)"
+                } else {
+                    "$updateCount pending"
+                }
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    PendingUpdates = $pendingStr
+                }
+            } catch {
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    PendingUpdates = "ERROR: $($_.Exception.Message)"
+                }
+            }
+        }
+        return $results
 }
 
 function Get-PendingReboot {
@@ -1035,66 +1275,75 @@ function Get-PendingReboot {
     .EXAMPLE
         Get-PendingReboot -ComputerName "PC01"
     #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
-    )
-    
-    try {
-        $pendingReboot = $false
-        $reasons = @()
-        
-        $cbs = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            Test-Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"
-        } -ErrorAction SilentlyContinue
-        
-        if ($cbs) {
-            $pendingReboot = $true
-            $reasons += "CBS"
-        }
-        
-        $wu = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"
-        } -ErrorAction SilentlyContinue
-        
-        if ($wu) {
-            $pendingReboot = $true
-            $reasons += "WindowsUpdate"
-        }
-        
-        $pfro = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            $prop = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name PendingFileRenameOperations -ErrorAction SilentlyContinue
-            return ($null -ne $prop -and $prop.PendingFileRenameOperations)
-        } -ErrorAction SilentlyContinue
-        
-        if ($pfro) {
-            $pendingReboot = $true
-            $reasons += "FileRename"
-        }
-        
-        $sccm = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            try {
-                $ccmClientSDK = Invoke-CimMethod -Namespace "root\ccm\ClientSDK" -ClassName CCM_ClientUtilities -MethodName DetermineIfRebootPending -ErrorAction Stop
-                return ($ccmClientSDK.RebootPending -or $ccmClientSDK.IsHardRebootPending)
-            } catch {
-                return $false
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [string[]]$ComputerName
+        )
+
+        if (-not $ComputerName) {
+            $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+            if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+                Write-LogMessage "No computer name provided or selected." -Level Error
+                return
             }
-        } -ErrorAction SilentlyContinue
-        
-        if ($sccm) {
-            $pendingReboot = $true
-            $reasons += "SCCM"
         }
-        
-        if ($pendingReboot) {
-            return "Yes ($($reasons -join ', '))"
-        } else {
-            return "No"
+
+        $results = @()
+        foreach ($name in $ComputerName) {
+            $identity = Resolve-ComputerIdentity $name
+            try {
+                $pendingReboot = $false
+                $reasons = @()
+                $cbs = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    Test-Path "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending"
+                } -ErrorAction SilentlyContinue
+                if ($cbs) {
+                    $pendingReboot = $true
+                    $reasons += "CBS"
+                }
+                $wu = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    Test-Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired"
+                } -ErrorAction SilentlyContinue
+                if ($wu) {
+                    $pendingReboot = $true
+                    $reasons += "WindowsUpdate"
+                }
+                $pfro = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    $prop = Get-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager" -Name PendingFileRenameOperations -ErrorAction SilentlyContinue
+                    return ($null -ne $prop -and $prop.PendingFileRenameOperations)
+                } -ErrorAction SilentlyContinue
+                if ($pfro) {
+                    $pendingReboot = $true
+                    $reasons += "FileRename"
+                }
+                $sccm = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    try {
+                        $ccmClientSDK = Invoke-CimMethod -Namespace "root\\ccm\\ClientSDK" -ClassName CCM_ClientUtilities -MethodName DetermineIfRebootPending -ErrorAction Stop
+                        return ($ccmClientSDK.RebootPending -or $ccmClientSDK.IsHardRebootPending)
+                    } catch {
+                        return $false
+                    }
+                } -ErrorAction SilentlyContinue
+                if ($sccm) {
+                    $pendingReboot = $true
+                    $reasons += "SCCM"
+                }
+                $status = if ($pendingReboot) { "Yes ($($reasons -join ', '))" } else { "No" }
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    PendingReboot = $status
+                }
+            } catch {
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    PendingReboot = "ERROR: $($_.Exception.Message)"
+                }
+            }
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
-    }
+        return $results
 }
 
 function Get-GPLastUpdate {
@@ -1108,43 +1357,57 @@ function Get-GPLastUpdate {
     .EXAMPLE
         Get-GPLastUpdate -ComputerName "PC01"
     #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
-    )
-    
-    try {
-        $gpUpdate = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            try {
-                $userGP = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy\State\Machine\Extension-List\{00000000-0000-0000-0000-000000000000}" -Name EndTimeHi,EndTimeLo -ErrorAction SilentlyContinue
-                
-                if ($userGP -and $userGP.EndTimeHi -and $userGP.EndTimeLo) {
-                    $fileTime = ([Int64]$userGP.EndTimeHi -shl 32) -bor $userGP.EndTimeLo
-                    $lastUpdate = [DateTime]::FromFileTime($fileTime)
-                    return $lastUpdate
-                }
-                
-                $gpResult = gpresult /R /SCOPE:COMPUTER | Select-String "Last time Group Policy was applied"
-                if ($gpResult) {
-                    $dateString = $gpResult.ToString() -replace ".*:\s*", ""
-                    return [DateTime]::Parse($dateString)
-                }
-                
-                return $null
-            } catch {
-                return $null
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [string[]]$ComputerName
+        )
+
+        if (-not $ComputerName) {
+            $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+            if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+                Write-LogMessage "No computer name provided or selected." -Level Error
+                return
             }
-        } -ErrorAction Stop
-        
-        if ($gpUpdate) {
-            return $gpUpdate.ToString("yyyy-MM-dd HH:mm")
-        } else {
-            return "Unknown"
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
-    }
+
+        $results = @()
+        foreach ($name in $ComputerName) {
+            $identity = Resolve-ComputerIdentity $name
+            try {
+                $gpUpdate = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                    try {
+                        $userGP = Get-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Group Policy\\State\\Machine\\Extension-List\\{00000000-0000-0000-0000-000000000000}" -Name EndTimeHi,EndTimeLo -ErrorAction SilentlyContinue
+                        if ($userGP -and $userGP.EndTimeHi -and $userGP.EndTimeLo) {
+                            $fileTime = ([Int64]$userGP.EndTimeHi -shl 32) -bor $userGP.EndTimeLo
+                            $lastUpdate = [DateTime]::FromFileTime($fileTime)
+                            return $lastUpdate
+                        }
+                        $gpResult = gpresult /R /SCOPE:COMPUTER | Select-String "Last time Group Policy was applied"
+                        if ($gpResult) {
+                            $dateString = $gpResult.ToString() -replace ".*:\\s*", ""
+                            return [DateTime]::Parse($dateString)
+                        }
+                        return $null
+                    } catch {
+                        return $null
+                    }
+                } -ErrorAction Stop
+                $dateStr = if ($gpUpdate) { $gpUpdate.ToString("yyyy-MM-dd HH:mm") } else { "Unknown" }
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    GPLastUpdate = $dateStr
+                }
+            } catch {
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    GPLastUpdate = "ERROR: $($_.Exception.Message)"
+                }
+            }
+        }
+        return $results
 }
 
 #endregion
@@ -1162,141 +1425,165 @@ function Get-PrefetchSize {
     .EXAMPLE
         Get-PrefetchSize -ComputerName "PC01"
     #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
-    )
-    
-    try {
-        $prefetchPath = "\\$ComputerName\c$\Windows\Prefetch"
-        
-        if (Test-Path $prefetchPath) {
-            $files = Get-ChildItem -Path $prefetchPath -File -ErrorAction Stop
-            $totalSize = ($files | Measure-Object -Property Length -Sum -ErrorAction Stop).Sum
-            $fileCount = $files.Count
-            
-            $sizeInMB = [math]::Round($totalSize / 1MB, 2)
-            return "$sizeInMB MB ($fileCount files)"
-        } else {
-            return "N/A (Prefetch disabled)"
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [string[]]$ComputerName
+        )
+
+        if (-not $ComputerName) {
+            $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+            if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+                Write-LogMessage "No computer name provided or selected." -Level Error
+                return
+            }
         }
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
-    }
+
+        $results = @()
+        foreach ($name in $ComputerName) {
+            $identity = Resolve-ComputerIdentity $name
+            try {
+                $prefetchPath = "\\$($identity.Hostname)\c$\Windows\Prefetch"
+                if (Test-Path $prefetchPath) {
+                    $files = Get-ChildItem -Path $prefetchPath -File -ErrorAction Stop
+                    $totalSize = ($files | Measure-Object -Property Length -Sum -ErrorAction Stop).Sum
+                    $fileCount = $files.Count
+                    $sizeInMB = [math]::Round($totalSize / 1MB, 2)
+                    $sizeStr = "$sizeInMB MB ($fileCount files)"
+                } else {
+                    $sizeStr = "N/A (Prefetch disabled)"
+                }
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    PrefetchSize = $sizeStr
+                }
+            } catch {
+                $results += [PSCustomObject]@{
+                    Hostname = $identity.Hostname
+                    IP = $identity.IP
+                    PrefetchSize = "ERROR: $($_.Exception.Message)"
+                }
+            }
+        }
+        return $results
 }
 
 function Get-SCCMHealth {
     <#
     .SYNOPSIS
         Checks SCCM client health on a remote computer.
-    
-    .PARAMETER ComputerName
-        The name of the remote computer to query.
-    
-    .EXAMPLE
-        Get-SCCMHealth -ComputerName "PC01"
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    try {
-        $healthResult = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            $healthMessages = @()
-            
-            $clientPath = "C:\Windows\CCM\CcmExec.exe"
-            if (-not (Test-Path $clientPath)) {
-                $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='CcmExec.exe missing.'; Priority=1}
-            }
-            
-            try {
-                $service = Get-Service -Name CcmExec -ErrorAction Stop
-                if ($service.Status -ne 'Running') {
-                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='CcmExec service stopped.'; Priority=2}
-                }
-            } catch {
-                $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='CcmExec service missing.'; Priority=3}
-            }
-            
-            try {
-                $smsClient = Get-CimInstance -Namespace "root\ccm" -ClassName SMS_Client -ErrorAction Stop
-                if (-not $smsClient -or -not $smsClient.ClientVersion) {
-                    $healthMessages += [PSCustomObject]@{Severity='Warning'; Message='Client version not available.'; Priority=50}
-                }
-            } catch {
-                $healthMessages += [PSCustomObject]@{Severity='Warning'; Message='SMS_Client class inaccessible.'; Priority=51}
-            }
-            
-            try {
-                $mp = Get-CimInstance -Namespace "root\ccm" -ClassName SMS_Authority -ErrorAction Stop
-                if (-not $mp -or -not $mp.Name) {
-                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Site Code not available.'; Priority=4}
-                }
-            } catch {
-                $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='SMS_Authority class inaccessible.'; Priority=5}
-            }
-            
-            try {
-                $ccmClient = Get-CimInstance -Namespace "root\ccm" -ClassName CCM_Client -ErrorAction Stop
-                if (-not $ccmClient -or -not $ccmClient.ClientId) {
-                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Client ID not available.'; Priority=6}
-                }
-            } catch {
-                $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='CCM_Client class inaccessible.'; Priority=7}
-            }
-            
-            try {
-                $clientSDKTest = Get-CimInstance -Namespace "root\ccm\ClientSDK" -ClassName CCM_Application -ErrorAction Stop | Select-Object -First 1
-                if (-not $clientSDKTest) {
-                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='ClientSDK namespace empty.'; Priority=8}
-                }
-            } catch {
-                $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='ClientSDK namespace corrupt.'; Priority=9}
-            }
-            
-            try {
-                $policyResult = Get-CimInstance -Namespace "root\ccm\Policy\Machine\ActualConfig" -ClassName CCM_TaskSequence -ErrorAction Stop
-                if (-not $policyResult -or $policyResult.Count -eq 0) {
-                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Policy namespace empty.'; Priority=10}
-                }
-            } catch {
-                $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Policy namespace corrupt.'; Priority=11}
-            }
-            
-            try {
-                $mp = Get-CimInstance -Namespace "root\ccm" -ClassName SMS_Authority -ErrorAction Stop
-                if (-not $mp -or -not $mp.CurrentManagementPoint) {
-                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Management Point not available.'; Priority=14}
-                }
-            } catch {
-                $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Management Point inaccessible.'; Priority=15}
-            }
-            
-            if ($healthMessages.Count -eq 0) {
-                return "Healthy"
-            } elseif ($healthMessages.Count -eq 1) {
-                return "Corrupt Client: [$($healthMessages[0].Severity)] $($healthMessages[0].Message)"
-            } else {
-                $sortedMessages = $healthMessages | Sort-Object Priority, Severity, Message
-                $topError = $sortedMessages[0]
-                $additionalCount = $healthMessages.Count - 1
-                return "Corrupt Client: [$($topError.Severity)] $($topError.Message) (+ $additionalCount more issues)"
-            }
-        } -ErrorAction Stop
-        
-        return $healthResult
-    } catch {
-        return "ERROR: $($_.Exception.Message)"
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $identity = Resolve-ComputerIdentity $name
+        try {
+            $healthResult = Invoke-Command -ComputerName $identity.Hostname -ScriptBlock {
+                $healthMessages = @()
+                $clientPath = "C:\\Windows\\CCM\\CcmExec.exe"
+                if (-not (Test-Path $clientPath)) {
+                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='CcmExec.exe missing.'; Priority=1}
+                }
+                try {
+                    $service = Get-Service -Name CcmExec -ErrorAction Stop
+                    if ($service.Status -ne 'Running') {
+                        $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='CcmExec service stopped.'; Priority=2}
+                    }
+                } catch {
+                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='CcmExec service missing.'; Priority=3}
+                }
+                try {
+                    $smsClient = Get-CimInstance -Namespace "root\\ccm" -ClassName SMS_Client -ErrorAction Stop
+                    if (-not $smsClient -or -not $smsClient.ClientVersion) {
+                        $healthMessages += [PSCustomObject]@{Severity='Warning'; Message='Client version not available.'; Priority=50}
+                    }
+                } catch {
+                    $healthMessages += [PSCustomObject]@{Severity='Warning'; Message='SMS_Client class inaccessible.'; Priority=51}
+                }
+                try {
+                    $mp = Get-CimInstance -Namespace "root\\ccm" -ClassName SMS_Authority -ErrorAction Stop
+                    if (-not $mp -or -not $mp.Name) {
+                        $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Site Code not available.'; Priority=4}
+                    }
+                } catch {
+                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='SMS_Authority class inaccessible.'; Priority=5}
+                }
+                try {
+                    $ccmClient = Get-CimInstance -Namespace "root\\ccm" -ClassName CCM_Client -ErrorAction Stop
+                    if (-not $ccmClient -or -not $ccmClient.ClientId) {
+                        $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Client ID not available.'; Priority=6}
+                    }
+                } catch {
+                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='CCM_Client class inaccessible.'; Priority=7}
+                }
+                try {
+                    $clientSDKTest = Get-CimInstance -Namespace "root\\ccm\\ClientSDK" -ClassName CCM_Application -ErrorAction Stop | Select-Object -First 1
+                    if (-not $clientSDKTest) {
+                        $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='ClientSDK namespace empty.'; Priority=8}
+                    }
+                } catch {
+                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='ClientSDK namespace corrupt.'; Priority=9}
+                }
+                try {
+                    $policyResult = Get-CimInstance -Namespace "root\\ccm\\Policy\\Machine\\ActualConfig" -ClassName CCM_TaskSequence -ErrorAction Stop
+                    if (-not $policyResult -or $policyResult.Count -eq 0) {
+                        $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Policy namespace empty.'; Priority=10}
+                    }
+                } catch {
+                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Policy namespace corrupt.'; Priority=11}
+                }
+                try {
+                    $mp = Get-CimInstance -Namespace "root\\ccm" -ClassName SMS_Authority -ErrorAction Stop
+                    if (-not $mp -or -not $mp.CurrentManagementPoint) {
+                        $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Management Point not available.'; Priority=14}
+                    }
+                } catch {
+                    $healthMessages += [PSCustomObject]@{Severity='Critical'; Message='Management Point inaccessible.'; Priority=15}
+                }
+                if ($healthMessages.Count -eq 0) {
+                    return "Healthy"
+                } elseif ($healthMessages.Count -eq 1) {
+                    return "Corrupt Client: [$($healthMessages[0].Severity)] $($healthMessages[0].Message)"
+                } else {
+                    $sortedMessages = $healthMessages | Sort-Object Priority, Severity, Message
+                    $topError = $sortedMessages[0]
+                    $additionalCount = $healthMessages.Count - 1
+                    return "Corrupt Client: [$($topError.Severity)] $($topError.Message) (+ $additionalCount more issues)"
+                }
+            } -ErrorAction Stop
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                SCCMHealth = $healthResult
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Hostname = $identity.Hostname
+                IP = $identity.IP
+                SCCMHealth = "ERROR: $($_.Exception.Message)"
+            }
+        }
+    }
+    return $results
 }
 
 #endregion
 
 #region Wrapper Functions
-
 function Get-AllNetworkInfo {
     <#
     .SYNOPSIS
@@ -1313,18 +1600,32 @@ function Get-AllNetworkInfo {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    $networkDetails = Get-NetworkDetails -ComputerName $ComputerName
-    
-    return [PSCustomObject]@{
-        ComputerName = $ComputerName.ToUpper()
-        DNSServers = $networkDetails.DNS
-        DefaultGateway = $networkDetails.Gateway
-        NetworkShares = Get-SharesInfo -ComputerName $ComputerName
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $networkDetails = Get-NetworkDetails -ComputerName $name
+        $shares = Get-SharesInfo -ComputerName $name
+        $results += [PSCustomObject]@{
+            Computer = $networkDetails.Computer
+            Hostname = $networkDetails.Hostname
+            IP = $networkDetails.IP
+            DNSServers = $networkDetails.DNS
+            DefaultGateway = $networkDetails.Gateway
+            NetworkShares = $shares.Shares
+        }
+    }
+    return $results
 }
 
 function Get-AllADInfo {
@@ -1343,15 +1644,31 @@ function Get-AllADInfo {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    return [PSCustomObject]@{
-        ComputerName = $ComputerName.ToUpper()
-        ADLastLogon = Get-ADLastLogon -ComputerName $ComputerName
-        DomainController = Get-DomainController -ComputerName $ComputerName
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $adLastLogon = Get-ADLastLogon -ComputerName $name
+        $domainController = Get-DomainController -ComputerName $name
+        $results += [PSCustomObject]@{
+            Computer = $adLastLogon.Computer
+            Hostname = $adLastLogon.Hostname
+            IP = $adLastLogon.IP
+            ADLastLogon = $adLastLogon.LastLogon
+            DomainController = $domainController.DomainController
+        }
+    }
+    return $results
 }
 
 function Get-AllUserInfo {
@@ -1370,17 +1687,35 @@ function Get-AllUserInfo {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    return [PSCustomObject]@{
-        ComputerName = $ComputerName.ToUpper()
-        CurrentUser = Get-CurrentUser -ComputerName $ComputerName
-        LastLoggedOnUser = Get-LastLoggedOnUser -ComputerName $ComputerName
-        PrimaryUser = Get-PrimaryUser -ComputerName $ComputerName
-        LocalAdministrators = Get-LocalAdmins -ComputerName $ComputerName
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $currentUser = Get-CurrentUser -ComputerName $name
+        $lastLoggedOnUser = Get-LastLoggedOnUser -ComputerName $name
+        $primaryUser = Get-PrimaryUser -ComputerName $name
+        $localAdmins = Get-LocalAdmins -ComputerName $name
+        $results += [PSCustomObject]@{
+            Computer = $currentUser.Computer
+            Hostname = $currentUser.Hostname
+            IP = $currentUser.IP
+            CurrentUser = $currentUser.CurrentUser
+            LastLoggedOnUser = $lastLoggedOnUser.LastLoggedOnUser
+            PrimaryUser = $primaryUser.PrimaryUser
+            LocalAdministrators = $localAdmins.LocalAdmins
+        }
+    }
+    return $results
 }
 
 function Get-AllHardwareInfo {
@@ -1399,22 +1734,36 @@ function Get-AllHardwareInfo {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    $chassisInfo = Get-ChassisType -ComputerName $ComputerName
-    
-    $result = [PSCustomObject]@{
-        ComputerName = $ComputerName.ToUpper()
-        ChassisType = $chassisInfo.ChassisType
-        VMType = if ($chassisInfo.ContainsKey('VMType')) { $chassisInfo.VMType } else { "N/A" }
-        DiskSpace = Get-DriveSpace -ComputerName $ComputerName
-        MonitorCount = Get-MonitorCount -ComputerName $ComputerName
-        BatteryHealth = Get-BatteryHealth -ComputerName $ComputerName
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
-    
-    return $result
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $chassisInfo = Get-ChassisType -ComputerName $name
+        $driveSpace = Get-DriveSpace -ComputerName $name
+        $monitorCount = Get-MonitorCount -ComputerName $name
+        $batteryHealth = Get-BatteryHealth -ComputerName $name
+        $results += [PSCustomObject]@{
+            Computer = $chassisInfo.Computer
+            Hostname = $chassisInfo.Hostname
+            IP = $chassisInfo.IP
+            ChassisType = $chassisInfo.ChassisType
+            VMType = $chassisInfo.VMType
+            DiskSpace = $driveSpace.DriveSpace
+            MonitorCount = $monitorCount.MonitorCount
+            BatteryHealth = $batteryHealth.BatteryHealth
+        }
+    }
+    return $results
 }
 
 function Get-AllSecurityInfo {
@@ -1433,23 +1782,38 @@ function Get-AllSecurityInfo {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    $defenderInfo = Get-WindowsDefenderInfo -ComputerName $ComputerName
-    
-    return [PSCustomObject]@{
-        ComputerName = $ComputerName.ToUpper()
-        TPMStatus = Get-TPMStatus -ComputerName $ComputerName
-        BitLockerStatus = Get-BitLockerStatus -ComputerName $ComputerName
-        DefenderVersion = $defenderInfo.Version
-        DefenderSignatureVersion = $defenderInfo.SignatureVersion
-        DefenderSignatureLastUpdated = $defenderInfo.SignatureLastUpdated
-        DefenderLastScanType = $defenderInfo.LastScanType
-        DefenderLastScanTime = $defenderInfo.LastScanTime
-        DefenderStatus = $defenderInfo.Status
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $defenderInfo = Get-WindowsDefenderInfo -ComputerName $name
+        $tpmStatus = Get-TPMStatus -ComputerName $name
+        $bitLockerStatus = Get-BitLockerStatus -ComputerName $name
+        $results += [PSCustomObject]@{
+            Computer = $defenderInfo.Computer
+            Hostname = $defenderInfo.Hostname
+            IP = $defenderInfo.IP
+            TPMStatus = $tpmStatus.TPMStatus
+            BitLockerStatus = $bitLockerStatus.BitLockerStatus
+            DefenderVersion = $defenderInfo.Version
+            DefenderSignatureVersion = $defenderInfo.SignatureVersion
+            DefenderSignatureLastUpdated = $defenderInfo.SignatureLastUpdated
+            DefenderLastScanType = $defenderInfo.LastScanType
+            DefenderLastScanTime = $defenderInfo.LastScanTime
+            DefenderStatus = $defenderInfo.Status
+        }
+    }
+    return $results
 }
 
 function Get-AllUpdateInfo {
@@ -1468,17 +1832,35 @@ function Get-AllUpdateInfo {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    return [PSCustomObject]@{
-        ComputerName = $ComputerName.ToUpper()
-        LastWindowsUpdate = Get-LastWindowsUpdate -ComputerName $ComputerName
-        PendingUpdatesCount = Get-PendingUpdatesCount -ComputerName $ComputerName
-        GroupPolicyLastApplied = Get-GPLastUpdate -ComputerName $ComputerName
-        PendingReboot = Get-PendingReboot -ComputerName $ComputerName
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $lastUpdate = Get-LastWindowsUpdate -ComputerName $name
+        $pendingUpdates = Get-PendingUpdatesCount -ComputerName $name
+        $gpLastApplied = Get-GPLastUpdate -ComputerName $name
+        $pendingReboot = Get-PendingReboot -ComputerName $name
+        $results += [PSCustomObject]@{
+            Computer = $lastUpdate.Computer
+            Hostname = $lastUpdate.Hostname
+            IP = $lastUpdate.IP
+            LastWindowsUpdate = $lastUpdate.LastWindowsUpdate
+            PendingUpdatesCount = $pendingUpdates.PendingUpdatesCount
+            GroupPolicyLastApplied = $gpLastApplied.GPLastUpdate
+            PendingReboot = $pendingReboot.PendingReboot
+        }
+    }
+    return $results
 }
 
 function Get-AllSystemHealthInfo {
@@ -1497,15 +1879,31 @@ function Get-AllSystemHealthInfo {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$ComputerName
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]]$ComputerName
     )
-    
-    return [PSCustomObject]@{
-        ComputerName = $ComputerName.ToUpper()
-        PrefetchSize = Get-PrefetchSize -ComputerName $ComputerName
-        SCCMHealth = Get-SCCMHealth -ComputerName $ComputerName
+
+    if (-not $ComputerName) {
+        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-LogMessage "No computer name provided or selected." -Level Error
+            return
+        }
     }
+
+    $results = @()
+    foreach ($name in $ComputerName) {
+        $prefetch = Get-PrefetchSize -ComputerName $name
+        $sccm = Get-SCCMHealth -ComputerName $name
+        $results += [PSCustomObject]@{
+            Computer = $prefetch.Computer
+            Hostname = $prefetch.Hostname
+            IP = $prefetch.IP
+            PrefetchSize = $prefetch.PrefetchSize
+            SCCMHealth = $sccm.SCCMHealth
+        }
+    }
+    return $results
 }
 
 function Get-CompleteInventory {

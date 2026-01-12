@@ -599,5 +599,5 @@ function sysinfo {
     Get-ComputerInfo
 }
 
-# Export all functions
-Export-ModuleMember -Function *
+# Export all public functions
+Export-ModuleMember -Function grep, touch, df, sed, which, export, pkill, pgrep, head, tail, unzip, mkcd, ll, find-file, cpy, pst, sysinfo

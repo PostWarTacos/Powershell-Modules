@@ -1,3 +1,6 @@
+# Note: Most functions in this module require administrator privileges to query remote computers.
+# Individual functions will fail gracefully if run without proper permissions.
+
 
 #region Computer Identity Helper
 function Resolve-ComputerIdentity {
@@ -8,6 +11,9 @@ function Resolve-ComputerIdentity {
     )
     $resolvedHost = $null
     $resolvedIP = $null
+
+    # Regex for IPv4 and IPv6
+    $ipRegex = '^(?:\d{1,3}\.){3}\d{1,3}$|^([a-fA-F0-9:]+:+)+[a-fA-F0-9]+$'
 
     # Check for local machine
     if ($Computer -eq $env:COMPUTERNAME -or $Computer -eq 'localhost' -or $Computer -eq '.') {
@@ -28,24 +34,32 @@ function Resolve-ComputerIdentity {
                 Select-Object -ExpandProperty IPAddress -First 1)
         }
         if (-not $resolvedIP) { $resolvedIP = '127.0.0.1' }
+    } elseif ($Computer -match $ipRegex) {
+        # Input is an IP address, resolve hostname
+        $resolvedIP = $Computer
+        try {
+            $ptr = [System.Net.Dns]::GetHostEntry($Computer)
+            if ($ptr.HostName) {
+                $resolvedHost = $ptr.HostName
+            } elseif ($ptr.Aliases -and $ptr.Aliases.Count -gt 0) {
+                $resolvedHost = $ptr.Aliases[0]
+            } else {
+                $resolvedHost = $Computer
+            }
+        } catch {
+            $resolvedHost = $Computer
+        }
     } else {
+        # Input is a hostname, resolve IP
+        $resolvedHost = $Computer
         try {
             $dns = Resolve-DnsName -Name $Computer -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress }
             if ($dns) {
                 $resolvedIP = $dns[0].IPAddress
-                $resolvedHost = $dns[0].NameHost
             } else {
-                try {
-                    $ptr = [System.Net.Dns]::GetHostEntry($Computer)
-                    $resolvedHost = $ptr.HostName
-                    $resolvedIP = $Computer
-                } catch {
-                    $resolvedHost = $Computer
-                    $resolvedIP = $Computer
-                }
+                $resolvedIP = $Computer
             }
         } catch {
-            $resolvedHost = $Computer
             $resolvedIP = $Computer
         }
     }
@@ -71,14 +85,25 @@ function Resolve-ComputerIdentity {
 
 #region Dependency Checks
 
-# Ensure Write-LogMessage is available, otherwise download Utilities.psm1 from GitHub and import
+# Try to import Utilities module if available, but don't block module load if not found
 if (-not (Get-Command Write-LogMessage -ErrorAction SilentlyContinue)) {
-    Write-Host "Write-LogMessage not found. Downloading Utilities.psm1 from GitHub and importing..."
-    $url = "https://raw.githubusercontent.com/PostWarTacos/Powershell-Modules/main/Utilities/Utilities.psm1"
-    $localPath = Join-Path $env:TEMP 'Utilities.psm1'
-    Invoke-WebRequest -Uri $url -OutFile $localPath
-    . $localPath
+    try {
+        $utilitiesPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'Utilities\Utilities.psm1'
+        if (Test-Path $utilitiesPath) {
+            Import-Module $utilitiesPath -ErrorAction Stop
+        } else {
+            # Download from GitHub if not found locally
+            $url = "https://raw.githubusercontent.com/PostWarTacos/Powershell-Modules/main/Utilities/Utilities.psm1"
+            $localPath = Join-Path $env:TEMP 'Utilities.psm1'
+            Invoke-WebRequest -Uri $url -OutFile $localPath
+            Import-Module $localPath -ErrorAction Stop
+        }
+    } catch {
+        Write-Warning "Write-LogMessage not found. Please ensure Utilities module is available or check download/import permissions."
+    }
 }
+
+
 
 #endregion
 
@@ -110,13 +135,11 @@ function Get-SharesInfo {
         $identity = Resolve-ComputerIdentity $name
         try {
             if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
-                $shares = Get-SmbShare -CimSession $identity.Hostname -ErrorAction Stop | 
-                    Where-Object { $_.Name -notmatch '^(IPC\$|ADMIN\$|[A-Z]\$)$' }
-                $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; Shares = ($shares | ForEach-Object { "$($_.Name) ($($_.Path))" }) -join "; " }
+                $shares = Get-SmbShare -CimSession $identity.Hostname -ErrorAction Stop
+                $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; Shares = ($shares | ForEach-Object { "$($_.Name) ($($_.Path))" }) }
             } else {
-                $shares = Get-CimInstance -ClassName Win32_Share -ComputerName $identity.Hostname -ErrorAction Stop |
-                    Where-Object { $_.Name -notmatch '^(IPC\$|ADMIN\$|[A-Z]\$)$' }
-                $results += [PSCustomObject]@{ Computer = $identity.Computer; Hostname = $identity.Hostname; IP = $identity.IP; Shares = ($shares | ForEach-Object { "$($_.Name) ($($_.Path))" }) -join "; " }
+                $shares = Get-CimInstance -ClassName Win32_Share -ComputerName $identity.Hostname -ErrorAction Stop
+                $results += [PSCustomObject]@{ Computer = $identity.Computer; Hostname = $identity.Hostname; IP = $identity.IP; Shares = ($shares | ForEach-Object { "$($_.Name) ($($_.Path))" }) }
             }
         } catch {
             $results += [PSCustomObject]@{ Hostname = $identity.Hostname; IP = $identity.IP; Shares = "ERROR: $($_.Exception.Message)" }
@@ -234,7 +257,8 @@ function Get-NetworkDetails {
                         }
                         $i++
                     }
-                    [PSCustomObject]$row
+                    # Ensure the object is returned as a single object, not an array or flattened
+                    ,([PSCustomObject]$row)
                 } -ArgumentList $identity.IP
                 $results += $remoteResult
             }
@@ -267,11 +291,8 @@ function Get-ADLastLogon {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        Write-LogMessage "No computer name provided." -Level Error
+        return
     }
 
     $results = @()
@@ -332,11 +353,8 @@ function Get-DomainController {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        Write-LogMessage "No computer name provided." -Level Error
+        return
     }
 
     $results = @()
@@ -400,11 +418,8 @@ function Get-CurrentUser {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        Write-LogMessage "No computer name provided." -Level Error
+        return
     }
 
     $results = @()
@@ -462,11 +477,8 @@ function Get-LastLoggedOnUser {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        Write-LogMessage "No computer name provided." -Level Error
+        return
     }
 
     $results = @()
@@ -529,11 +541,8 @@ function Get-PrimaryUser {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        Write-LogMessage "No computer name provided." -Level Error
+        return
     }
 
     $results = @()
@@ -610,11 +619,8 @@ function Get-LocalAdmins {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        Write-LogMessage "No computer name provided." -Level Error
+        return
     }
 
     $results = @()
@@ -670,11 +676,8 @@ function Get-DriveSpace {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        Write-LogMessage "No computer name provided." -Level Error
+        return
     }
 
     $results = @()
@@ -727,11 +730,8 @@ function Get-ChassisType {
     )
 
     if (-not $ComputerName) {
-        $ComputerName = @(Get-FileName -InitialDirectory $PWD)
-        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
-            Write-LogMessage "No computer name provided or selected." -Level Error
-            return
-        }
+        Write-LogMessage "No computer name provided." -Level Error
+        return
     }
 
     $results = @()
@@ -2174,4 +2174,36 @@ function Get-CompleteInventory {
 #endregion
 
 # Export module members
-Export-ModuleMember -Function *
+# Export all public functions
+Export-ModuleMember -Function @(
+    'Resolve-ComputerIdentity',
+    'Get-SharesInfo',
+    'Get-NetworkDetails',
+    'Get-ADLastLogon',
+    'Get-DomainController',
+    'Get-CurrentUser',
+    'Get-LastLoggedOnUser',
+    'Get-PrimaryUser',
+    'Get-LocalAdmins',
+    'Get-DriveSpace',
+    'Get-ChassisType',
+    'Get-MonitorCount',
+    'Get-BatteryHealth',
+    'Get-TPMStatus',
+    'Get-BitLockerStatus',
+    'Get-WindowsDefenderInfo',
+    'Get-LastWindowsUpdate',
+    'Get-PendingUpdatesCount',
+    'Get-PendingReboot',
+    'Get-GPLastUpdate',
+    'Get-PrefetchSize',
+    'Get-SCCMHealth',
+    'Get-AllNetworkInfo',
+    'Get-AllADInfo',
+    'Get-AllUserInfo',
+    'Get-AllHardwareInfo',
+    'Get-AllSecurityInfo',
+    'Get-AllUpdateInfo',
+    'Get-AllSystemHealthInfo',
+    'Get-CompleteInventory'
+)

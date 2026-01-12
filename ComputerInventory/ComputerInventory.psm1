@@ -1,6 +1,30 @@
 # Note: Most functions in this module require administrator privileges to query remote computers.
 # Individual functions will fail gracefully if run without proper permissions.
+# Will need to verify that "fail gracefully" works correctly on all functions. These is final step of completing script, low priority
 
+<#
+.SYNOPSIS
+    Computer Inventory PowerShell Module
+
+.DESCRIPTION
+    Provides comprehensive computer inventory and health check functions for remote Windows systems.
+    Functions can be called individually or grouped by category (Hardware, Network, Security, etc.)
+
+.NOTES
+    Author: PostWarTacos
+    Date: January 8, 2026
+    Version: 3.0 (Converted to module format)
+#>
+#region AD Base DN
+# Dynamically set AD base DN from local domain
+try {
+    $domainName = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
+    $domainParts = $domainName.Split('.')
+    $Global:ADBaseDN = ($domainParts | ForEach-Object { "DC=$_" }) -join ','
+} catch {
+    $Global:ADBaseDN = 'DC=yourdomain,DC=com'
+}
+#endregion
 
 #region Computer Identity Helper
 function Resolve-ComputerIdentity {
@@ -69,19 +93,6 @@ function Resolve-ComputerIdentity {
     }
 }
 #endregion
-<#
-.SYNOPSIS
-    Computer Inventory PowerShell Module
-
-.DESCRIPTION
-    Provides comprehensive computer inventory and health check functions for remote Windows systems.
-    Functions can be called individually or grouped by category (Hardware, Network, Security, etc.)
-
-.NOTES
-    Author: PostWarTacos
-    Date: January 8, 2026
-    Version: 3.0 (Converted to module format)
-#>
 
 #region Dependency Checks
 
@@ -102,8 +113,6 @@ if (-not (Get-Command Write-LogMessage -ErrorAction SilentlyContinue)) {
         Write-Warning "Write-LogMessage not found. Please ensure Utilities module is available or check download/import permissions."
     }
 }
-
-
 
 #endregion
 
@@ -273,16 +282,20 @@ function Get-NetworkDetails {
 
 #region Active Directory Functions
 
-function Get-ADLastLogon {
+function Get-ComputerLastADContact {
     <#
     .SYNOPSIS
-        Gets the last logon timestamp for a computer from Active Directory.
-    
+        Gets the last time a computer account contacted the domain controller (DC).
+
+    .DESCRIPTION
+        Returns the AD 'whenChanged' attribute for the computer object, which is updated when the computer account changes or authenticates with the DC.
+        This is NOT the last logon of a user, but the last time the PC itself communicated with AD.
+
     .PARAMETER ComputerName
         The name of the computer to query.
-    
+
     .EXAMPLE
-        Get-ADLastLogon -ComputerName "PC01"
+        Get-ComputerLastADContact -ComputerName "PC01"
     #>
     [CmdletBinding()]
     param(
@@ -291,34 +304,27 @@ function Get-ADLastLogon {
     )
 
     if (-not $ComputerName) {
-        Write-LogMessage "No computer name provided." -Level Error
-        return
+        $ComputerName = @($env:COMPUTERNAME)
     }
 
     $results = @()
     foreach ($name in $ComputerName) {
         $identity = Resolve-ComputerIdentity $name
         try {
-            $lastLogon = $null
-            if (Get-Module -ListAvailable -Name ActiveDirectory) {
-                Import-Module ActiveDirectory -ErrorAction SilentlyContinue
-                $computer = Get-ADComputer -Identity $identity.Hostname -Properties LastLogonTimeStamp -ErrorAction Stop
-                if ($computer.LastLogonTimeStamp) {
-                    $lastLogon = [DateTime]::FromFileTime($computer.LastLogonTimeStamp)
+                # Find the computer DN dynamically using sAMAccountName (hostname + $)
+                $samAccountName = "$($identity.Hostname)$"
+                $searcher = New-Object DirectoryServices.DirectorySearcher
+                $searcher.Filter = "(&(objectCategory=computer)(sAMAccountName=$samAccountName))"
+                $searcher.PropertiesToLoad.Add("distinguishedName") | Out-Null
+                $searcher.PropertiesToLoad.Add("whenChanged") | Out-Null
+                $result = $searcher.FindOne()
+                if ($result -and $result.Properties["distinguishedName"].Count -gt 0) {
+                    $dn = $result.Properties["distinguishedName"][0]
+                    $adsi = [ADSI]("LDAP://$dn")
+                    $lastLogon = if ($adsi.Properties["whenChanged"] -and $adsi.Properties["whenChanged"].Count -gt 0) { $adsi.Properties["whenChanged"][0] } else { $null }
                 } else {
-                    $lastLogon = "Never"
+                    $lastLogon = "Not found in AD"
                 }
-            } else {
-                $searcher = New-Object System.DirectoryServices.DirectorySearcher
-                $searcher.Filter = "(&(objectCategory=computer)(name=$($identity.Hostname)))"
-                $searcher.PropertiesToLoad.Add("lastLogonTimeStamp") | Out-Null
-                $adSearchResult = $searcher.FindOne()
-                if ($adSearchResult -and $adSearchResult.Properties["lastLogonTimeStamp"][0]) {
-                    $lastLogon = [DateTime]::FromFileTime($adSearchResult.Properties["lastLogonTimeStamp"][0])
-                } else {
-                    $lastLogon = "Never"
-                }
-            }
             $results += [PSCustomObject]@{
                 Hostname = $identity.Hostname
                 IP = $identity.IP
@@ -353,8 +359,7 @@ function Get-DomainController {
     )
 
     if (-not $ComputerName) {
-        Write-LogMessage "No computer name provided." -Level Error
-        return
+        $ComputerName = @($env:COMPUTERNAME)
     }
 
     $results = @()
@@ -418,8 +423,7 @@ function Get-CurrentUser {
     )
 
     if (-not $ComputerName) {
-        Write-LogMessage "No computer name provided." -Level Error
-        return
+        $ComputerName = @($env:COMPUTERNAME)
     }
 
     $results = @()
@@ -431,11 +435,13 @@ function Get-CurrentUser {
             if ($loggedOnUser.UserName) {
                 $username = $loggedOnUser.UserName.Split('\\')[-1]
                 try {
-                    if (Get-Module -ListAvailable -Name ActiveDirectory) {
-                        Import-Module ActiveDirectory -ErrorAction SilentlyContinue
-                        $adUser = Get-ADUser $username -ErrorAction SilentlyContinue
-                        if ($adUser) {
-                            $currentUser = "$($adUser.Name) ($username)"
+                    if ($identity.Hostname -eq $env:COMPUTERNAME -or $identity.Hostname -eq 'localhost' -or $name -eq $env:COMPUTERNAME -or $name -eq 'localhost') {
+                        $currentUser = $username
+                    } else {
+                        $adsiUser = [ADSI]("LDAP://CN=$username,CN=Users,DC=yourdomain,DC=com")
+                                                $adsiUser = [ADSI]("LDAP://CN=$username,CN=Users,$Global:ADBaseDN")
+                        if ($adsiUser.Properties["name"] -and $adsiUser.Properties["name"].Count -gt 0) {
+                            $currentUser = "$($adsiUser.Properties["name"][0]) ($username)"
                         }
                     }
                 } catch {}
@@ -477,8 +483,7 @@ function Get-LastLoggedOnUser {
     )
 
     if (-not $ComputerName) {
-        Write-LogMessage "No computer name provided." -Level Error
-        return
+        $ComputerName = [System.Net.Dns]::GetHostName()
     }
 
     $results = @()
@@ -495,11 +500,13 @@ function Get-LastLoggedOnUser {
             $lastUser = $null
             if ($userDir) {
                 try {
-                    if (Get-Module -ListAvailable -Name ActiveDirectory) {
-                        Import-Module ActiveDirectory -ErrorAction SilentlyContinue
-                        $adUser = Get-ADUser $userDir.Name -ErrorAction SilentlyContinue
-                        if ($adUser) {
-                            $lastUser = "$($adUser.Name) ($($userDir.Name))"
+                    if ($identity.Hostname -eq $env:COMPUTERNAME -or $identity.Hostname -eq 'localhost' -or $name -eq $env:COMPUTERNAME -or $name -eq 'localhost') {
+                        $lastUser = $userDir.Name
+                    } else {
+                        $adsiUser = [ADSI]("LDAP://CN=$($userDir.Name),CN=Users,DC=yourdomain,DC=com")
+                                                $adsiUser = [ADSI]("LDAP://CN=$($userDir.Name),CN=Users,$Global:ADBaseDN")
+                        if ($adsiUser.Properties["name"] -and $adsiUser.Properties["name"].Count -gt 0) {
+                            $lastUser = "$($adsiUser.Properties["name"][0]) ($($userDir.Name))"
                         }
                     }
                 } catch {}
@@ -570,11 +577,13 @@ function Get-PrimaryUser {
                 $primaryUserObj = $userStats | Sort-Object ProfileSize -Descending | Select-Object -First 1
                 if ($primaryUserObj) {
                     try {
-                        if (Get-Module -ListAvailable -Name ActiveDirectory) {
-                            Import-Module ActiveDirectory -ErrorAction SilentlyContinue
-                            $adUser = Get-ADUser $primaryUserObj.UserName -ErrorAction SilentlyContinue
-                            if ($adUser) {
-                                $primaryUser = "$($adUser.Name) ($($primaryUserObj.UserName))"
+                        if ($identity.Hostname -eq $env:COMPUTERNAME -or $identity.Hostname -eq 'localhost' -or $name -eq $env:COMPUTERNAME -or $name -eq 'localhost') {
+                            $primaryUser = $primaryUserObj.UserName
+                        } else {
+                            $adsiUser = [ADSI]("LDAP://CN=$($primaryUserObj.UserName),CN=Users,DC=yourdomain,DC=com")
+                                                        $adsiUser = [ADSI]("LDAP://CN=$($primaryUserObj.UserName),CN=Users,$Global:ADBaseDN")
+                            if ($adsiUser.Properties["name"] -and $adsiUser.Properties["name"].Count -gt 0) {
+                                $primaryUser = "$($adsiUser.Properties["name"][0]) ($($primaryUserObj.UserName))"
                             }
                         }
                     } catch {}

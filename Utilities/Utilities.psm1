@@ -665,6 +665,6 @@ function Get-SMSCode {
 #region Module Exports
 
 # Export all public functions
-Export-ModuleMember -Function Write-LogMessage, Get-FileName, Start-KeepAwake, Measure-CommandClean, ConvertTo-Base64, Get-SMSCode
+Export-ModuleMember -Function Get-PubIP, winutil, Update-PowerShell, Write-LogMessage, Get-FileName, Start-KeepAwake, Measure-CommandClean, ConvertTo-Base64, Get-SMSCode
 
 #endregion

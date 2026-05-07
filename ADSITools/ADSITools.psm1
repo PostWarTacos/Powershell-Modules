@@ -97,14 +97,26 @@ function Find-ADSIObject {
     }
 
     $searcher = [ADSISearcher]::new($filter)
-    $result = $searcher.FindOne()
+    $results = $searcher.FindAll()
 
-    if ( $result -and $result.Properties["adspath"] ) {
-        return [ADSI]$result.Properties["adspath"][0]
-    } else {
-        Write-Warning "$Type '$Name' not found in AD."
-        return $null
+    try {
+        $matches = foreach ( $result in $results ) {
+            if ( $result.Properties["adspath"] -and $result.Properties["adspath"].Count -gt 0 ) {
+                [ADSI]$result.Properties["adspath"][0]
+            }
+        }
+    } finally {
+        if ( $results ) {
+            $results.Dispose()
+        }
     }
+
+    if ( $matches ) {
+        return $matches
+    }
+
+    Write-Warning "$Type '$Name' not found in AD."
+    return $null
 }
 
 Export-ModuleMember Find-ADSIObject

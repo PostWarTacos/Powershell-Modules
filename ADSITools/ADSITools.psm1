@@ -13,6 +13,11 @@ function Find-ADSIObject {
         the ActiveDirectory PowerShell module. Supports searching for Computers, Users, Groups, and Organizational Units.
         Uses LDAP filters for efficient querying of the AD directory.
 
+        Returns all matches found for the requested name and type.
+        - No matches: returns $null and writes a warning
+        - One match: returns a single ADSI object
+        - Multiple matches: returns a collection of ADSI objects
+
     .PARAMETER Type
         Specifies the type of Active Directory object to search for.
         
@@ -54,7 +59,7 @@ function Find-ADSIObject {
     .EXAMPLE
         Find-ADSIObject -Type User -Name "jdoe"
         
-        Searches for a user with sAMAccountName "jdoe" and returns the ADSI object.
+        Searches for users with sAMAccountName "jdoe" and returns one or more ADSI objects.
 
     .EXAMPLE
         Find-ADSIObject -Type Computer -Name "WORKSTATION01"
@@ -62,14 +67,20 @@ function Find-ADSIObject {
         Searches for a computer named "WORKSTATION01" (automatically searches for "WORKSTATION01$").
 
     .EXAMPLE
-        Find-ADSIObject -Type Group -Name "IT-Admins"
+        $results = Find-ADSIObject -Type Group -Name "IT-Admins"
+        $results | Select-Object Name, distinguishedName
         
-        Searches for a security or distribution group named "IT-Admins".
+        Searches for groups named "IT-Admins" and lists key properties for all matches.
         
     .EXAMPLE
-        Find-ADSIObject -Type OU -Name "Sales"
+        $results = Find-ADSIObject -Type OU -Name "Sales"
+        if ( $results -is [System.Array] ) {
+            "Found $($results.Count) matching OUs"
+        } elseif ( $results ) {
+            "Found 1 matching OU"
+        }
         
-        Searches for an Organizational Unit named "Sales".
+        Searches for Organizational Units named "Sales" and handles one-or-many results.
     #>
     [CmdletBinding()]
     param (

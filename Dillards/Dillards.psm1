@@ -100,7 +100,7 @@ Function Get-SiteInfoFromDDSAPI() {
     
     try {
         # Query the DDS API and convert JSON response to PowerShell objects
-        $web = Invoke-WebRequest -Uri $uri -Headers $header -ErrorAction Stop
+        $web = Invoke-WebRequest -Uri $uri -Headers $header -ErrorAction Stop -UseBasicParsing
         $db = $web.content | ConvertFrom-Json
     }
     catch {

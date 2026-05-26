@@ -172,9 +172,30 @@ function which {
         which Get-Process
         Shows the definition location of the Get-Process cmdlet.
     #>
-    param($name)
-    
-    Get-Command $name | Select-Object -ExpandProperty Definition
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    $cmd = Get-Command -Name $Name -ErrorAction Stop  # resolves alias/function/cmdlet/etc.[web:14]
+
+    # If the queried symbol is itself an alias, Definition is the underlying command name.[web:35][web:38]
+    $isAlias   = $cmd.CommandType -eq 'Alias'
+    $rootName  = if ($isAlias) { $cmd.Definition } else { $cmd.Name }
+
+    $cmd |
+        Select-Object `
+            @{Name='QueriedName';Expression={ $Name }}, `
+            @{Name='Definition';Expression={ $_.Definition }}, `
+            Source, DLL, ModuleName, Version, CommandType,
+            @{Name='RootCommand';Expression={ $rootName }}, `
+            @{Name='Note';Expression={
+                if ($isAlias) {
+                    "Queried name is an alias; root command is '$rootName'"
+                } else {
+                    $null
+                }
+            }}
 }
 
 function export {

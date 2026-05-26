@@ -500,7 +500,7 @@ function ll {
     Get-ChildItem -Force | Format-Table -AutoSize
 }
 
-function find-file {
+function Find-File {
     <#
     .SYNOPSIS
         Recursively searches for files by name (Unix find equivalent).
@@ -519,16 +519,16 @@ function find-file {
         Accept wildcard characters: True
         
         Syntax (BNF):
-        <find-file-command> ::= "find-file" <search-pattern>
+        <Find-File-command> ::= "Find-File" <search-pattern>
         <search-pattern> ::= <literal-string> | <wildcard-pattern>
         <wildcard-pattern> ::= [<chars>]* "*" [<chars>]*
     
     .EXAMPLE
-        find-file "*.txt"
+        Find-File "*.txt"
         Finds all text files in the current directory and subdirectories.
     
     .EXAMPLE
-        find-file "config"
+        Find-File "config"
         Searches for files containing "config" in their name.
     #>
     param($name)
@@ -621,4 +621,4 @@ function sysinfo {
 }
 
 # Export all public functions
-Export-ModuleMember -Function grep, touch, df, sed, which, export, pkill, pgrep, head, tail, unzip, mkcd, ll, find-file, cpy, pst, sysinfo
+Export-ModuleMember -Function grep, touch, df, sed, which, export, pkill, pgrep, head, tail, unzip, mkcd, ll, Find-File, cpy, pst, sysinfo

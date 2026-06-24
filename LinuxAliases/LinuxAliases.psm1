@@ -1,52 +1,6 @@
 # LinuxAliases Module
 # Unix/Linux command equivalents for PowerShell
 
-function grep {
-    <#
-    .SYNOPSIS
-        Searches for text patterns in files (Unix grep equivalent).
-    
-    .DESCRIPTION
-        Searches files or pipeline input for lines matching a regular expression pattern.
-        Mimics Unix/Linux grep behavior in PowerShell using Select-String.
-    
-    .PARAMETER regex
-        The regular expression pattern to search for.
-        
-        Type: String
-        Required: True
-        Position: 0
-        Accept pipeline input: False
-        
-        Syntax (BNF):
-        <grep-command> ::= "grep" <regex-pattern> [<directory>]
-        <regex-pattern> ::= <pcre-expression>
-    
-    .PARAMETER dir
-        Optional directory path to search. If specified, searches all files in the directory.
-        If omitted, searches pipeline input.
-        
-        Type: String
-        Required: False
-        Position: 1
-        Accept pipeline input: False
-    
-    .EXAMPLE
-        Get-Content file.txt | grep "error"
-        Searches for "error" in pipeline input.
-    
-    .EXAMPLE
-        grep "TODO" C:\Scripts
-        Searches all files in C:\Scripts for "TODO".
-    #>
-    param($regex, $dir)
-    
-    if ( $dir ) {
-        Get-ChildItem $dir | select-string $regex
-        return
-    }
-    $input | select-string $regex
-}
 
 function touch {
     <#

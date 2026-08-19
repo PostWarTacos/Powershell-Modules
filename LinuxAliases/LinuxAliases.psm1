@@ -131,6 +131,17 @@ function which {
         [string]$Name
     )
 
+    $queriedName = $Name
+
+    # Bash-style "!!" means "the previous command" - resolve it to that command's name first
+    if ($Name -eq '!!') {
+        $lastEntry = Get-History -Count 1
+        if (-not $lastEntry) {
+            throw "No previous command in history to resolve '!!'."
+        }
+        $Name = ($lastEntry.CommandLine.Trim() -split '\s+')[0]
+    }
+
     $cmd = Get-Command -Name $Name -ErrorAction Stop  # resolves alias/function/cmdlet/etc.[web:14]
 
     # If the queried symbol is itself an alias, Definition is the underlying command name.[web:35][web:38]
@@ -139,7 +150,7 @@ function which {
 
     $cmd |
         Select-Object `
-            @{Name='QueriedName';Expression={ $Name }}, `
+            @{Name='QueriedName';Expression={ $queriedName }}, `
             @{Name='Definition';Expression={ $_.Definition }}, `
             Source, DLL, ModuleName, Version, CommandType,
             @{Name='RootCommand';Expression={ $rootName }}, `

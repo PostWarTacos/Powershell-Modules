@@ -12,8 +12,8 @@ function admin {
     .PARAMETER net
     Prompts for domain admin credentials that work on both local machine and domain resources.
     When specified, you will be prompted to enter:
-    - Domain name (defaults to DDS if left blank)
-    - Admin username (defaults to wurtzmt-a if left blank)
+    - Domain name (defaults to $env:USERDOMAIN if left blank)
+    - Admin username (defaults to $env:USERNAME if left blank)
     - Password (entered as secure string)
     
     Type: Switch
@@ -67,11 +67,11 @@ function admin {
     
     if ($net) {
         # Prompt for domain admin credentials (works for both local and domain)
-        $domainInput = Read-Host "Enter domain [DDS]"
-        $domain = if ([string]::IsNullOrWhiteSpace($domainInput)) { "DDS" } else { $domainInput }
+        $domainInput = Read-Host "Enter domain [$env:USERDOMAIN]"
+        $domain = if ([string]::IsNullOrWhiteSpace($domainInput)) { $env:USERDOMAIN } else { $domainInput }
         
-        $usernameInput = Read-Host "Enter admin username [wurtzmt-a]"
-        $username = if ([string]::IsNullOrWhiteSpace($usernameInput)) { "wurtzmt-a" } else { $usernameInput }
+        $usernameInput = Read-Host "Enter admin username [$env:USERNAME]"
+        $username = if ([string]::IsNullOrWhiteSpace($usernameInput)) { $env:USERNAME } else { $usernameInput }
         
         $password = Read-Host "Enter password" -AsSecureString
         $fullUser = "$domain\$username"

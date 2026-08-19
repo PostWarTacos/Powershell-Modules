@@ -12,8 +12,8 @@ Provides sudo-like elevation commands for PowerShell.
 **Functions:**
 - `admin` - Elevate commands or open elevated PowerShell window
   - Supports `-net` switch for domain admin credentials
-  - Default domain: `DDS` (customizable in script or when prompted)
-  - Default username: `wurtzmt-a` (customizable in script or when prompted)
+  - Default domain: current `$env:USERDOMAIN` (customizable when prompted)
+  - Default username: current `$env:USERNAME` (customizable when prompted)
 
 **Aliases:**
 - `su` → `admin`
@@ -33,10 +33,10 @@ admin -net
 ```
 
 **Customization:**
-To change the default domain and username, edit the values in [AdminTools.psm1](AdminTools/AdminTools.psm1):
+To change the defaults, edit the values in [AdminTools.psm1](AdminTools/AdminTools.psm1):
 ```powershell
-$domain = if ([string]::IsNullOrWhiteSpace($domainInput)) { "DDS" } else { $domainInput }
-$username = if ([string]::IsNullOrWhiteSpace($usernameInput)) { "wurtzmt-a" } else { $usernameInput }
+$domain = if ([string]::IsNullOrWhiteSpace($domainInput)) { $env:USERDOMAIN } else { $domainInput }
+$username = if ([string]::IsNullOrWhiteSpace($usernameInput)) { $env:USERNAME } else { $usernameInput }
 ```
 
 ---
@@ -56,26 +56,6 @@ Active Directory utilities using ADSI without requiring the ActiveDirectory modu
 Find-ADSIObject -Type User -Name "jdoe"
 # Find a computer
 Find-ADSIObject -Type Computer -Name "WORKSTATION01"
-```
-
----
-
-
-### Dillards
-Retrieves store information from the Dillards DDS API.
-
-**Functions:**
-- `Get-SiteInfoFromDDSAPI` - Query store info by hostname, store number, or site code
-   - Returns: StoreNumber, SiteCode, Division, StoreType, Timezone
-
-**Usage:**
-```powershell
-# By hostname
-Get-SiteInfoFromDDSAPI -Hostname "S1234WKS001"
-# By store number
-Get-SiteInfoFromDDSAPI -StoreNumber "0123"
-# By site code
-Get-SiteInfoFromDDSAPI -SiteCode "1234"
 ```
 
 ---
